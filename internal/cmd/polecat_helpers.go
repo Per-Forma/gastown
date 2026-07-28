@@ -346,3 +346,41 @@ func displayDryRunSafetyCheck(target polecatTarget) bool {
 
 	return result.Blocked
 }
+
+// RecoveryCheckResult mirrors the JSON structure of `gt polecat check-recovery --json`.
+type RecoveryCheckResult struct {
+	Polecat     string `json:"polecat"`
+	RigName     string `json:"rig_name"`
+	Verdict     string `json:"verdict"`
+	NeedsRecovery bool `json:"needs_recovery"`
+	Reason    string `json:"reason,omitempty"`
+	PendingRecovery string `json:"pending_recovery,omitempty"`
+	LastCheck   string `json:"last_check,omitempty"`
+	Since       string `json:"since,omitempty"`
+}
+
+// recoverCheckHelper runs `gt polecat check-recovery --json` for a given target and blocks teardown if the verdict is NEEDS_RECOVERY.
+// Returns nil if the verdict is SAFE_TO_NUKE (proceed), or an error describing why it's blocked.
+func recoverCheckHelper(target polecatTarget) error {
+	cmd := exec.Command("gt", "polecat", "check-recovery", "--json", "--reconcile-cleanup")
+	cmd.Dir = target.r.Path
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If check-recovery itself fails (e.g. binary not found), fall through to existing safety checks
+		fmt.Fprintf(os.Stderr, "  %s check-recovery unavailable: %v\n", style.Warning.Render("Warning"), err)
+		return nil
+	}
+
+	var result RecoveryCheckResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s check-recovery output parse error: %v\n", style.Warning.Render("Warning"), err)
+		return nil
+	}
+
+	if result.NeedsRecovery || result.Verdict == "NEEDS_RECOVERY" {
+		return fmt.Errorf("NEEDS_RECOVERY: %s/%s — reason: %s", target.rigName, target.polecatName, result.Reason)
+	}
+
+	return nil
+}
