@@ -999,10 +999,11 @@ func gatherStatus() (TownStatus, error) {
 			}()
 
 			rigWg.Wait()
+			reconcileRigWorkSignals(&rs)
 
 			activeHooks := 0
-			for _, hook := range rs.Hooks {
-				if hook.HasWork {
+			for _, agent := range rs.Agents {
+				if agent.HasWork {
 					activeHooks++
 				}
 			}
@@ -1013,6 +1014,7 @@ func gatherStatus() (TownStatus, error) {
 	}
 
 	wg.Wait()
+	applyRecoveryAgentStates(townRoot, &status)
 
 	// Enrich agents with runtime info — inspect actual running processes
 	for i := range status.Agents {
@@ -1046,6 +1048,70 @@ func gatherStatus() (TownStatus, error) {
 	status.Summary.RigCount = len(rigs)
 
 	return status, nil
+}
+
+// reconcileRigWorkSignals makes the agent bead's lifecycle state authoritative
+// when legacy handoff/hook fields lag behind assignment state. This prevents a
+// hooked polecat from rendering as has_work=false during Dolt propagation.
+func reconcileRigWorkSignals(status *RigStatus) {
+	working := make(map[string]AgentRuntime)
+	for i := range status.Agents {
+		agent := &status.Agents[i]
+		if !agent.HasWork && (agent.State == "working" || agent.State == "review-needed") {
+			agent.HasWork = true
+		}
+		if agent.HasWork {
+			working[agent.Address] = *agent
+		}
+	}
+	for i := range status.Hooks {
+		agent, ok := working[status.Hooks[i].Agent]
+		if !ok {
+			continue
+		}
+		status.Hooks[i].HasWork = true
+		if status.Hooks[i].Title == "" {
+			status.Hooks[i].Title = agent.WorkTitle
+		}
+	}
+}
+
+func applyRecoveryAgentStates(townRoot string, status *TownStatus) {
+	incidents, err := daemon.LoadModelCrashRecoveryIncidents(townRoot)
+	if err != nil {
+		return
+	}
+	bySession := make(map[string]daemon.ModelCrashRecoveryIncident, len(incidents))
+	for _, incident := range incidents {
+		bySession[incident.SessionName] = incident
+	}
+	apply := func(agent *AgentRuntime) {
+		incident, ok := bySession[agent.Session]
+		if !ok {
+			return
+		}
+		if strings.Contains(incident.RecoveryAction, "pending") ||
+			strings.Contains(incident.RecoveryAction, "restart") ||
+			strings.Contains(incident.RecoveryAction, "continuation") ||
+			strings.Contains(incident.RecoveryAction, "probe") {
+			agent.State = "recovering"
+			return
+		}
+		switch incident.Kind {
+		case "session-stall":
+			agent.State = "stalled"
+		case "session-fatal", "":
+			agent.State = "crashed"
+		}
+	}
+	for i := range status.Agents {
+		apply(&status.Agents[i])
+	}
+	for i := range status.Rigs {
+		for j := range status.Rigs[i].Agents {
+			apply(&status.Rigs[i].Agents[j])
+		}
+	}
 }
 
 func loadModelCrashRecoveryStatus(townRoot string) *ModelCrashRecoveryStatus {
@@ -1969,8 +2035,16 @@ func discoverRigAgents(allSessions map[string]bool, r *rig.Rig, crews []string, 
 			// Check tmux session from preloaded map (O(1))
 			agent.Running = allSessions[d.session]
 
-			// Look up agent bead from preloaded map (O(1))
-			if issue, ok := allAgentBeads[d.beadID]; ok {
+			// Look up the agent bead from the preloaded map (O(1)). If the
+			// aggregate prefetch missed a freshly-created durable agent bead,
+			// fall back to the authoritative town-level agent-bead lookup.
+			// This keeps status correct across daemon restarts and Dolt
+			// propagation without making the common path more expensive.
+			issue, ok := allAgentBeads[d.beadID]
+			if !ok {
+				issue, _, _ = beads.New(r.Path).GetAgentBead(d.beadID)
+			}
+			if issue != nil {
 				// Prefer database columns over description parsing
 				// HookBead column is authoritative (cleared by unsling)
 				agent.HookBead = issue.HookBead
