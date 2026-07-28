@@ -218,6 +218,14 @@ func checkPolecatSafety(target polecatTarget) *SafetyCheckResult {
 		}
 	}
 
+	// Check 3: Live recovery check via check-recovery command.
+	// This catches NEEDS_RECOVERY verdicts that stale cleanup_status on the
+	// agent bead may miss — e.g. polecat did `gt done` with clean status,
+	// then continued working after the session was revived.
+	if err := recoverCheckHelper(target); err != nil {
+		result.Reasons = append(result.Reasons, err.Error())
+	}
+
 	result.Blocked = len(result.Reasons) > 0
 	return result
 }
