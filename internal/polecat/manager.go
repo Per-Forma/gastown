@@ -3148,3 +3148,43 @@ func assessStaleness(info *StalenessInfo, threshold int) (bool, string) {
 	// (The session is the source of truth for liveness)
 	return true, "no active session"
 }
+
+// RecoveryVerdict represents the result of a recovery check.
+type RecoveryVerdict string
+
+const (
+	RecoverySafe      RecoveryVerdict = "SAFE_TO_NUKE"
+	RecoveryNeedsWork RecoveryVerdict = "NEEDS_RECOVERY"
+)
+
+// CheckRecovery runs `gt polecat check-recovery` for the named polecat and returns the verdict.
+// Returns RecoverySafe if the polecat is safe to tear down, or RecoveryNeedsWork if recovery is needed.
+// Returns an error if the check itself fails.
+func (m *Manager) CheckRecovery(polecatName string) (RecoveryVerdict, string, error) {
+	cmd := exec.Command("gt", "polecat", "check-recovery", "--json", "--reconcile-cleanup", polecatName)
+	cmd.Dir = m.rig.Path
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("check-recovery failed: %w: %s", err, string(output))
+	}
+
+	type recoveryResult struct {
+		Polecat       string `json:"polecat"`
+		RigName       string `json:"rig_name"`
+		Verdict       string `json:"verdict"`
+		NeedsRecovery bool   `json:"needs_recovery"`
+		Reason        string `json:"reason,omitempty"`
+	}
+
+	var result recoveryResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return "", "", fmt.Errorf("parsing check-recovery output: %w", err)
+	}
+
+	if result.NeedsRecovery || result.Verdict == string(RecoveryNeedsWork) {
+		return RecoveryNeedsWork, result.Reason, nil
+	}
+
+	return RecoverySafe, "", nil
+}
