@@ -10,7 +10,8 @@ The Deacon is the Mayor's background process that runs continuously, handling ca
 - Skip HEALTH_CHECK nudges when no active work exists
 - Sleep 60+ seconds between patrol cycles (longer when idle)
 - Let the feed subscription wake agents on actual events
-- The daemon (10-minute heartbeat) is the safety net for dead sessions
+- The daemon's 3-minute recovery tick marks heartbeat stale after 20 minutes
+  and restarts only after 30 minutes
 
 This prevents flooding idle agents with health checks every few seconds.
 
@@ -33,7 +34,7 @@ if the Deacon dies, Witnesses detect it and escalate to the Mayor.
 
 No WITNESS_PING mail is sent. Witnesses observe the Deacon's last_activity
 timestamp instead, and only send an alert to the Mayor if the Deacon appears
-unresponsive (>5 minutes stale). This avoids heartbeat mail spam.
+unresponsive (beyond the configured 20-minute stale threshold). This avoids heartbeat mail spam.
 
 ## Abbreviated Patrol Mode (Idle Effort Tuning)
 
@@ -72,7 +73,7 @@ When `await-signal` outputs `EFFORT: full`, run all steps thoroughly (normal mod
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-deacon-patrol"
-version = 14
+version = 15
 
 [vars]
 [vars.wisp_type]
@@ -89,8 +90,9 @@ title = "Refresh heartbeat"
 description = """
 Signal liveness to the daemon.
 
-The daemon monitors `deacon/heartbeat.json` and kills the Deacon if it goes stale
-(>20 minutes without update). Refresh the heartbeat at the start of every patrol cycle
+The daemon monitors `deacon/heartbeat.json`. It records staleness after 20 minutes
+without interrupting `await-signal`, and restarts only after 30 minutes without an
+update. Refresh the heartbeat at the start of every patrol cycle
 so the daemon knows we are alive.
 
 ```bash

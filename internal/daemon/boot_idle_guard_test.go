@@ -111,7 +111,7 @@ func TestHasActiveWork(t *testing.T) {
 		{
 			name: "active work in second store only",
 			stores: map[string]beadsdk.Storage{
-				"hq":  &searchStorage{results: map[string][]*beadsdk.Issue{}},
+				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 				"rig": &searchStorage{results: map[string][]*beadsdk.Issue{
 					"in_progress": {{ID: "nw-xyz"}},
 				}},
@@ -161,7 +161,7 @@ func TestEnsureBootRunning_IdleGuard(t *testing.T) {
 		},
 		{
 			name:         "stale heartbeat, no work — spawn",
-			heartbeatAge: 10 * time.Minute,
+			heartbeatAge: 25 * time.Minute,
 			stores: map[string]beadsdk.Storage{
 				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 			},

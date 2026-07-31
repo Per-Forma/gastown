@@ -55,6 +55,16 @@ func TestPatrolScanOutputJSON(t *testing.T) {
 				},
 			},
 		},
+		Orphans: &PatrolScanOrphanOutput{
+			Checked: 1,
+			Found:   1,
+			Orphans: []PatrolScanOrphanItem{{
+				BeadID:    "gas-orphan",
+				Assignee:  "gastown/polecats/vanished",
+				Polecat:   "vanished",
+				Recovered: true,
+			}},
+		},
 	}
 
 	data, err := json.Marshal(output)
@@ -94,6 +104,24 @@ func TestPatrolScanOutputJSON(t *testing.T) {
 	}
 	if parsed.Receipts[0].Verdict != witness.PatrolVerdictStale {
 		t.Errorf("receipt Verdict = %q, want %q", parsed.Receipts[0].Verdict, witness.PatrolVerdictStale)
+	}
+	if parsed.Orphans == nil || parsed.Orphans.Found != 1 || !parsed.Orphans.Orphans[0].Recovered {
+		t.Fatalf("orphan JSON = %+v, want one recovered orphan", parsed.Orphans)
+	}
+}
+
+func TestShouldNotifyActiveZombiesHonorsFlag(t *testing.T) {
+	result := &witness.DetectZombiePolecatsResult{
+		Zombies: []witness.ZombieResult{{PolecatName: "alpha", WasActive: true}},
+	}
+	if shouldNotifyActiveZombies(false, result) {
+		t.Fatal("--notify=false authorized a notification")
+	}
+	if !shouldNotifyActiveZombies(true, result) {
+		t.Fatal("--notify=true failed to authorize an active-zombie notification")
+	}
+	if shouldNotifyActiveZombies(true, &witness.DetectZombiePolecatsResult{}) {
+		t.Fatal("empty result authorized a notification")
 	}
 }
 

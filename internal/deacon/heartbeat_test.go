@@ -119,11 +119,11 @@ func TestHeartbeat_IsFresh(t *testing.T) {
 			expected: true, // Fresh is <5 minutes
 		},
 		{
-			name: "6 minutes old",
+			name: "21 minutes old",
 			hb: &Heartbeat{
-				Timestamp: time.Now().Add(-6 * time.Minute),
+				Timestamp: time.Now().Add(-21 * time.Minute),
 			},
-			expected: false, // Not fresh (>=5 minutes)
+			expected: false, // Not fresh (>=20 minutes)
 		},
 	}
 
@@ -156,25 +156,25 @@ func TestHeartbeat_IsStale(t *testing.T) {
 			expected: false, // Fresh (<5 minutes)
 		},
 		{
-			name: "7 minutes old",
-			hb: &Heartbeat{
-				Timestamp: time.Now().Add(-7 * time.Minute),
-			},
-			expected: true, // Stale (5-20 minutes)
-		},
-		{
-			name: "16 minutes old",
-			hb: &Heartbeat{
-				Timestamp: time.Now().Add(-16 * time.Minute),
-			},
-			expected: true, // Stale (5-20 minutes)
-		},
-		{
 			name: "21 minutes old",
 			hb: &Heartbeat{
 				Timestamp: time.Now().Add(-21 * time.Minute),
 			},
-			expected: false, // Very stale, not stale (>20 minutes)
+			expected: true, // Stale (20-30 minutes)
+		},
+		{
+			name: "29 minutes old",
+			hb: &Heartbeat{
+				Timestamp: time.Now().Add(-29 * time.Minute),
+			},
+			expected: true, // Stale (20-30 minutes)
+		},
+		{
+			name: "31 minutes old",
+			hb: &Heartbeat{
+				Timestamp: time.Now().Add(-31 * time.Minute),
+			},
+			expected: false, // Very stale, not stale (>30 minutes)
 		},
 	}
 
@@ -221,11 +221,11 @@ func TestHeartbeat_IsVeryStale(t *testing.T) {
 			expected: false, // Stale but not very stale (threshold is 20m)
 		},
 		{
-			name: "21 minutes old",
+			name: "31 minutes old",
 			hb: &Heartbeat{
-				Timestamp: time.Now().Add(-21 * time.Minute),
+				Timestamp: time.Now().Add(-31 * time.Minute),
 			},
-			expected: true, // Very stale (>20 minutes)
+			expected: true, // Very stale (>30 minutes)
 		},
 	}
 

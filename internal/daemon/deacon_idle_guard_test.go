@@ -61,74 +61,60 @@ exit 0
 	}
 }
 
-// TestCheckDeaconHeartbeat_IdleGuard verifies that the nudge is suppressed when
-// the Deacon heartbeat is stale but no active work is in flight (idle guard).
-func TestCheckDeaconHeartbeat_IdleGuard(t *testing.T) {
+// TestCheckDeaconHeartbeat_MechanicalOnly verifies that the stale band never
+// spends a model turn, regardless of active-work or store state.
+func TestCheckDeaconHeartbeat_MechanicalOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows — fake tmux requires bash")
 	}
 
 	tests := []struct {
-		name             string
-		heartbeatAge     time.Duration
-		stores           map[string]beadsdk.Storage
-		wantNudgeLog     bool
-		wantIdleGuardLog bool
-		desc             string
+		name           string
+		heartbeatAge   time.Duration
+		stores         map[string]beadsdk.Storage
+		wantStaleLog   bool
+		wantRestartLog bool
 	}{
 		{
-			name:         "idle: stale heartbeat, no work — nudge suppressed",
-			heartbeatAge: 10 * time.Minute,
+			name:         "fresh boundary remains silent",
+			heartbeatAge: 19*time.Minute + 59*time.Second,
 			stores: map[string]beadsdk.Storage{
 				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 			},
-			wantNudgeLog:     false,
-			wantIdleGuardLog: true,
-			desc:             "Idle guard must suppress nudge when no work is in flight",
 		},
 		{
-			name:         "active work: stale heartbeat, in_progress bead — nudge sent",
-			heartbeatAge: 10 * time.Minute,
+			name:         "stale idle town logs transition without nudge",
+			heartbeatAge: 20 * time.Minute,
+			stores: map[string]beadsdk.Storage{
+				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
+			},
+			wantStaleLog: true,
+		},
+		{
+			name:         "stale active work logs transition without nudge",
+			heartbeatAge: 25 * time.Minute,
 			stores: map[string]beadsdk.Storage{
 				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{
 					"in_progress": {{ID: "sc-abc"}},
 				}},
 			},
-			wantNudgeLog:     true,
-			wantIdleGuardLog: false,
-			desc:             "Nudge must fire when in_progress work exists",
+			wantStaleLog: true,
 		},
 		{
-			name:         "hooked only: stale heartbeat, patrol wisp — nudge suppressed",
-			heartbeatAge: 10 * time.Minute,
-			stores: map[string]beadsdk.Storage{
-				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{
-					"hooked": {{ID: "hq-wisp-34zi"}},
-				}},
-			},
-			wantNudgeLog:     false,
-			wantIdleGuardLog: true,
-			desc:             "Patrol wisps in hooked state do not count as active work; nudge must be suppressed",
-		},
-		{
-			name:         "store error: stale heartbeat, store fails — nudge sent conservatively",
-			heartbeatAge: 10 * time.Minute,
+			name:         "stale store error still does not nudge",
+			heartbeatAge: 25 * time.Minute,
 			stores: map[string]beadsdk.Storage{
 				"hq": &searchStorage{err: fmt.Errorf("db offline")},
 			},
-			wantNudgeLog:     true,
-			wantIdleGuardLog: false,
-			desc:             "Nudge must fire conservatively when work state is unknown",
+			wantStaleLog: true,
 		},
 		{
-			name:         "very stale: heartbeat >= 20 min — escalation path, no nudge",
-			heartbeatAge: 21 * time.Minute,
+			name:         "very stale enters restart path",
+			heartbeatAge: 30 * time.Minute,
 			stores: map[string]beadsdk.Storage{
 				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 			},
-			wantNudgeLog:     false,
-			wantIdleGuardLog: false,
-			desc:             "Very stale heartbeat takes escalation path, not nudge path; idle guard not reached",
+			wantRestartLog: true,
 		},
 	}
 
@@ -148,6 +134,11 @@ func TestCheckDeaconHeartbeat_IdleGuard(t *testing.T) {
 			writeDeaconHeartbeat(t, townRoot, tc.heartbeatAge)
 
 			d := newTestDaemonWithStores(t, townRoot, tc.stores)
+			if tc.wantRestartLog {
+				rt := NewRestartTracker(townRoot, RestartTrackerConfig{})
+				rt.state.Agents["deacon"] = &AgentRestartInfo{BackoffUntil: time.Now().Add(time.Hour)}
+				d.restartTracker = rt
+			}
 
 			logBuf := &strings.Builder{}
 			d.logger = log.New(logBuf, "", 0)
@@ -156,16 +147,20 @@ func TestCheckDeaconHeartbeat_IdleGuard(t *testing.T) {
 
 			logOutput := logBuf.String()
 
-			hasIdleGuardLog := strings.Contains(logOutput, "nudge skipped")
-			if hasIdleGuardLog != tc.wantIdleGuardLog {
-				t.Errorf("%s\nidle guard log present=%v, want=%v\nlog:\n%s",
-					tc.desc, hasIdleGuardLog, tc.wantIdleGuardLog, logOutput)
+			if strings.Contains(logOutput, "HEALTH_CHECK") || strings.Contains(logOutput, "nudging session") {
+				t.Fatalf("stale heartbeat emitted a model nudge:\n%s", logOutput)
 			}
-
-			hasNudgeLog := strings.Contains(logOutput, "nudging session")
-			if hasNudgeLog != tc.wantNudgeLog {
-				t.Errorf("%s\nnudge log present=%v, want=%v\nlog:\n%s",
-					tc.desc, hasNudgeLog, tc.wantNudgeLog, logOutput)
+			if got := strings.Contains(logOutput, "entered stale band"); got != tc.wantStaleLog {
+				t.Errorf("stale transition log present=%v, want=%v\nlog:\n%s", got, tc.wantStaleLog, logOutput)
+			}
+			if got := strings.Contains(logOutput, "STUCK DEACON"); got != tc.wantRestartLog {
+				t.Errorf("restart log present=%v, want=%v\nlog:\n%s", got, tc.wantRestartLog, logOutput)
+			}
+			if tc.wantStaleLog {
+				d.checkDeaconHeartbeat()
+				if got := strings.Count(logBuf.String(), "entered stale band"); got != 1 {
+					t.Errorf("stale transition logged %d times, want exactly once", got)
+				}
 			}
 		})
 	}

@@ -284,8 +284,8 @@ func TestPatrolFormulasUseDynamicBeadResolution(t *testing.T) {
 // includes heartbeat refresh steps to prevent the daemon from killing a
 // healthy Deacon mid-cycle.
 //
-// Without heartbeat refreshes, a patrol cycle that exceeds 20 minutes
-// (HeartbeatVeryStaleThreshold = 20m) causes the daemon to consider the Deacon
+// Without heartbeat refreshes, a patrol cycle that exceeds 30 minutes
+// (HeartbeatVeryStaleThreshold = 30m) causes the daemon to consider the Deacon
 // stuck and kill it, even though the Deacon is actively executing steps.
 func TestDeaconPatrolHasHeartbeatSteps(t *testing.T) {
 	content, err := formulasFS.ReadFile("formulas/mol-deacon-patrol.formula.toml")
@@ -362,5 +362,18 @@ func TestDeaconPatrolHasHeartbeatSteps(t *testing.T) {
 	}
 	if !foundMandatoryHandoff {
 		t.Error("deacon patrol formula must require gt handoff after patrol report")
+	}
+}
+
+func TestDeaconPatrolHeartbeatPolicyExceedsBackoff(t *testing.T) {
+	content, err := formulasFS.ReadFile("formulas/mol-deacon-patrol.formula.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"--backoff-max 15m", "staleness after 20 minutes", "restarts only after 30 minutes"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("deacon patrol policy missing %q", want)
+		}
 	}
 }

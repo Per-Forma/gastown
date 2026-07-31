@@ -456,7 +456,7 @@ func TestDeaconCrashLoopProbeFreshHeartbeatStabilizesButStaleForcesLocalRestart(
 
 	t.Run("stale existing process forces pinned local restart", func(t *testing.T) {
 		d, rt, clock, root := newDaemon(t)
-		if err := deacon.WriteHeartbeat(root, &deacon.Heartbeat{Timestamp: clock.now.Add(-10 * time.Minute)}); err != nil {
+		if err := deacon.WriteHeartbeat(root, &deacon.Heartbeat{Timestamp: clock.now.Add(-25 * time.Minute)}); err != nil {
 			t.Fatal(err)
 		}
 		mgr := &fakeDeaconProbeManager{}
@@ -474,7 +474,7 @@ func TestDeaconCrashLoopProbeFreshHeartbeatStabilizesButStaleForcesLocalRestart(
 
 	t.Run("stale already-running result preserves latch", func(t *testing.T) {
 		d, rt, clock, root := newDaemon(t)
-		if err := deacon.WriteHeartbeat(root, &deacon.Heartbeat{Timestamp: clock.now.Add(-10 * time.Minute)}); err != nil {
+		if err := deacon.WriteHeartbeat(root, &deacon.Heartbeat{Timestamp: clock.now.Add(-25 * time.Minute)}); err != nil {
 			t.Fatal(err)
 		}
 		mgr := &fakeDeaconProbeManager{startErr: deacon.ErrAlreadyRunning}

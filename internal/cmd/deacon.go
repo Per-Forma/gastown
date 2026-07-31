@@ -666,13 +666,16 @@ type DeaconStatusOutput struct {
 
 // HeartbeatStatus is the JSON-serializable heartbeat info.
 type HeartbeatStatus struct {
-	Timestamp  time.Time `json:"timestamp"`
-	AgeSec     float64   `json:"age_seconds"`
-	Cycle      int64     `json:"cycle"`
-	LastAction string    `json:"last_action,omitempty"`
-	Fresh      bool      `json:"fresh"`
-	Stale      bool      `json:"stale"`
-	VeryStale  bool      `json:"very_stale"`
+	Timestamp              time.Time `json:"timestamp"`
+	AgeSec                 float64   `json:"age_seconds"`
+	Cycle                  int64     `json:"cycle"`
+	LastAction             string    `json:"last_action,omitempty"`
+	Fresh                  bool      `json:"fresh"`
+	Stale                  bool      `json:"stale"`
+	VeryStale              bool      `json:"very_stale"`
+	StaleAfterSec          float64   `json:"stale_after_seconds"`
+	VeryStaleAfterSec      float64   `json:"very_stale_after_seconds"`
+	ThresholdPolicyWarning string    `json:"threshold_policy_warning,omitempty"`
 }
 
 func runDeaconStatus(cmd *cobra.Command, args []string) error {
@@ -701,14 +704,23 @@ func runDeaconStatus(cmd *cobra.Command, args []string) error {
 	var hbStatus *HeartbeatStatus
 	if townRoot != "" {
 		if hb := deacon.ReadHeartbeat(townRoot); hb != nil {
+			staleThreshold, veryStaleThreshold, policyErr := config.LoadOperationalConfig(townRoot).GetDeaconConfig().HeartbeatThresholdsD()
+			age := hb.Age()
+			policyWarning := ""
+			if policyErr != nil {
+				policyWarning = policyErr.Error()
+			}
 			hbStatus = &HeartbeatStatus{
-				Timestamp:  hb.Timestamp,
-				AgeSec:     hb.Age().Seconds(),
-				Cycle:      hb.Cycle,
-				LastAction: hb.LastAction,
-				Fresh:      hb.IsFresh(),
-				Stale:      hb.IsStale(),
-				VeryStale:  hb.IsVeryStale(),
+				Timestamp:              hb.Timestamp,
+				AgeSec:                 age.Seconds(),
+				Cycle:                  hb.Cycle,
+				LastAction:             hb.LastAction,
+				Fresh:                  age >= 0 && age < staleThreshold,
+				Stale:                  age >= staleThreshold && age < veryStaleThreshold,
+				VeryStale:              age >= veryStaleThreshold,
+				StaleAfterSec:          staleThreshold.Seconds(),
+				VeryStaleAfterSec:      veryStaleThreshold.Seconds(),
+				ThresholdPolicyWarning: policyWarning,
 			}
 		}
 	}

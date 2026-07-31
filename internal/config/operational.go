@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"path/filepath"
 	"time"
 )
@@ -35,20 +36,23 @@ const (
 
 // Daemon defaults.
 const (
-	DefaultMassDeathWindow                 = 30 * time.Second
-	DefaultMassDeathThreshold              = 3
-	DefaultDogIdleSessionTimeout           = 1 * time.Hour
-	DefaultPolecatIdleSessionTimeout       = 15 * time.Minute
-	DefaultDogIdleRemoveTimeout            = 4 * time.Hour
-	DefaultStaleWorkingTimeout             = 2 * time.Hour
-	DefaultMaxDogPoolSize                  = 4
-	DefaultMaxLifecycleMessageAge          = 6 * time.Hour
-	DefaultSyncFailureEscalationThreshold  = 3
-	DefaultDoctorMolCooldown               = 5 * time.Minute
-	DefaultRecoveryHeartbeatInterval       = 3 * time.Minute
-	DefaultBootSpawnCooldown               = 2 * time.Minute
-	DefaultBootIdleSuppression             = 15 * time.Minute
-	DefaultDeaconGracePeriod               = 5 * time.Minute
+	DefaultMassDeathWindow                = 30 * time.Second
+	DefaultMassDeathThreshold             = 3
+	DefaultDogIdleSessionTimeout          = 1 * time.Hour
+	DefaultPolecatIdleSessionTimeout      = 15 * time.Minute
+	DefaultDogIdleRemoveTimeout           = 4 * time.Hour
+	DefaultStaleWorkingTimeout            = 2 * time.Hour
+	DefaultMaxDogPoolSize                 = 4
+	DefaultMaxLifecycleMessageAge         = 6 * time.Hour
+	DefaultSyncFailureEscalationThreshold = 3
+	DefaultDoctorMolCooldown              = 5 * time.Minute
+	DefaultRecoveryHeartbeatInterval      = 3 * time.Minute
+	DefaultActiveWorkScanInterval         = 10 * time.Minute
+	DefaultActiveWorkScanTimeout          = 5 * time.Minute
+	DefaultActiveWorkScanConcurrency      = 2
+	DefaultBootSpawnCooldown              = 2 * time.Minute
+	DefaultBootIdleSuppression            = 15 * time.Minute
+	DefaultDeaconGracePeriod              = 5 * time.Minute
 
 	// Pressure check defaults — fully opt-in. All zero = disabled.
 	// Configure in settings/config.json under operational.daemon to enable.
@@ -60,21 +64,22 @@ const (
 
 // Deacon defaults.
 const (
-	DefaultDeaconPingTimeout               = 30 * time.Second
-	DefaultDeaconConsecutiveFailures       = 3
-	DefaultDeaconCooldown                  = 5 * time.Minute
-	DefaultDeaconHeartbeatStaleThreshold   = 5 * time.Minute
-	DefaultDeaconHeartbeatVeryStale        = 20 * time.Minute
-	DefaultMaxRedispatches                 = 3
-	DefaultRedispatchCooldown              = 5 * time.Minute
-	DefaultMaxFeedsPerCycle                = 3
-	DefaultFeedCooldown                    = 10 * time.Minute
+	DefaultDeaconPingTimeout             = 30 * time.Second
+	DefaultDeaconConsecutiveFailures     = 3
+	DefaultDeaconCooldown                = 5 * time.Minute
+	DefaultDeaconPatrolBackoffMax        = 15 * time.Minute
+	DefaultDeaconHeartbeatStaleThreshold = 20 * time.Minute
+	DefaultDeaconHeartbeatVeryStale      = 30 * time.Minute
+	DefaultMaxRedispatches               = 3
+	DefaultRedispatchCooldown            = 5 * time.Minute
+	DefaultMaxFeedsPerCycle              = 3
+	DefaultFeedCooldown                  = 10 * time.Minute
 )
 
 // Polecat defaults.
 const (
-	DefaultPolecatHeartbeatStale = 3 * time.Minute
-	DefaultPolecatDoltMaxRetries = 10
+	DefaultPolecatHeartbeatStale  = 3 * time.Minute
+	DefaultPolecatDoltMaxRetries  = 10
 	DefaultPolecatDoltBaseBackoff = 500 * time.Millisecond
 	DefaultPolecatDoltBackoffMax  = 30 * time.Second
 	DefaultPolecatPendingMaxAge   = 5 * time.Minute
@@ -110,9 +115,9 @@ const (
 	DefaultWitnessStartupStallThreshold  = 90 * time.Second
 	DefaultWitnessStartupActivityGrace   = 60 * time.Second
 	DefaultWitnessMaxBeadRespawns        = 3
-	DefaultWitnessDoneIntentStuckTimeout    = 60 * time.Second
-	DefaultWitnessDoneIntentRecentGrace     = 30 * time.Second
-	DefaultWitnessHeartbeatStartupGrace     = 5 * time.Minute
+	DefaultWitnessDoneIntentStuckTimeout = 60 * time.Second
+	DefaultWitnessDoneIntentRecentGrace  = 30 * time.Second
+	DefaultWitnessHeartbeatStartupGrace  = 5 * time.Minute
 )
 
 // LoadOperationalConfig loads operational config from a town root.
@@ -378,6 +383,31 @@ func (d *DaemonThresholds) RecoveryHeartbeatIntervalD() time.Duration {
 	return DefaultRecoveryHeartbeatInterval
 }
 
+// ActiveWorkScanIntervalD returns the minimum interval between unchanged
+// mechanical active-work scans for a rig.
+func (d *DaemonThresholds) ActiveWorkScanIntervalD() time.Duration {
+	if d != nil {
+		return ParseDurationOrDefault(d.ActiveWorkScanInterval, DefaultActiveWorkScanInterval)
+	}
+	return DefaultActiveWorkScanInterval
+}
+
+// ActiveWorkScanTimeoutD returns the timeout for one mechanical patrol scan.
+func (d *DaemonThresholds) ActiveWorkScanTimeoutD() time.Duration {
+	if d != nil {
+		return ParseDurationOrDefault(d.ActiveWorkScanTimeout, DefaultActiveWorkScanTimeout)
+	}
+	return DefaultActiveWorkScanTimeout
+}
+
+// ActiveWorkScanConcurrencyV returns the maximum concurrent mechanical rig scans.
+func (d *DaemonThresholds) ActiveWorkScanConcurrencyV() int {
+	if d != nil && d.ActiveWorkScanConcurrency != nil && *d.ActiveWorkScanConcurrency > 0 {
+		return *d.ActiveWorkScanConcurrency
+	}
+	return DefaultActiveWorkScanConcurrency
+}
+
 // BootSpawnCooldownD returns the configured or default boot spawn cooldown.
 func (d *DaemonThresholds) BootSpawnCooldownD() time.Duration {
 	if d != nil {
@@ -469,20 +499,49 @@ func (d *DeaconThresholds) CooldownD() time.Duration {
 	return DefaultDeaconCooldown
 }
 
-// HeartbeatStaleThresholdD returns the configured or default heartbeat stale threshold.
-func (d *DeaconThresholds) HeartbeatStaleThresholdD() time.Duration {
-	if d != nil {
-		return ParseDurationOrDefault(d.HeartbeatStaleThreshold, DefaultDeaconHeartbeatStaleThreshold)
+// HeartbeatThresholdsD resolves and validates the Deacon heartbeat policy as a
+// tuple. Invalid values fall back together so callers cannot observe a stale
+// threshold that is incompatible with its restart threshold.
+func (d *DeaconThresholds) HeartbeatThresholdsD() (stale, veryStale time.Duration, validationErr error) {
+	stale = DefaultDeaconHeartbeatStaleThreshold
+	veryStale = DefaultDeaconHeartbeatVeryStale
+
+	if d != nil && d.HeartbeatStaleThreshold != "" {
+		parsed, err := time.ParseDuration(d.HeartbeatStaleThreshold)
+		if err != nil {
+			return stale, veryStale, fmt.Errorf("invalid heartbeat_stale_threshold %q: %w", d.HeartbeatStaleThreshold, err)
+		}
+		stale = parsed
 	}
-	return DefaultDeaconHeartbeatStaleThreshold
+	if d != nil && d.HeartbeatVeryStaleThreshold != "" {
+		parsed, err := time.ParseDuration(d.HeartbeatVeryStaleThreshold)
+		if err != nil {
+			return DefaultDeaconHeartbeatStaleThreshold, DefaultDeaconHeartbeatVeryStale,
+				fmt.Errorf("invalid heartbeat_very_stale_threshold %q: %w", d.HeartbeatVeryStaleThreshold, err)
+		}
+		veryStale = parsed
+	}
+	if stale <= DefaultDeaconPatrolBackoffMax {
+		return DefaultDeaconHeartbeatStaleThreshold, DefaultDeaconHeartbeatVeryStale,
+			fmt.Errorf("heartbeat_stale_threshold %s must exceed patrol backoff %s", stale, DefaultDeaconPatrolBackoffMax)
+	}
+	if veryStale <= stale {
+		return DefaultDeaconHeartbeatStaleThreshold, DefaultDeaconHeartbeatVeryStale,
+			fmt.Errorf("heartbeat_very_stale_threshold %s must exceed stale threshold %s", veryStale, stale)
+	}
+	return stale, veryStale, nil
 }
 
-// HeartbeatVeryStaleThresholdD returns the configured or default heartbeat very stale threshold.
+// HeartbeatStaleThresholdD returns the resolved heartbeat stale threshold.
+func (d *DeaconThresholds) HeartbeatStaleThresholdD() time.Duration {
+	stale, _, _ := d.HeartbeatThresholdsD()
+	return stale
+}
+
+// HeartbeatVeryStaleThresholdD returns the resolved heartbeat restart threshold.
 func (d *DeaconThresholds) HeartbeatVeryStaleThresholdD() time.Duration {
-	if d != nil {
-		return ParseDurationOrDefault(d.HeartbeatVeryStaleThreshold, DefaultDeaconHeartbeatVeryStale)
-	}
-	return DefaultDeaconHeartbeatVeryStale
+	_, veryStale, _ := d.HeartbeatThresholdsD()
+	return veryStale
 }
 
 // MaxRedispatchesV returns the configured or default max redispatches.

@@ -77,6 +77,11 @@ type Daemon struct {
 	// Note: Only accessed from heartbeat loop goroutine - no sync needed.
 	deaconLastStarted time.Time
 
+	// Transition state suppresses repetitive stale-band logs while Deacon is
+	// legitimately sleeping in await-signal backoff.
+	deaconHeartbeatStaleLogged bool
+	deaconHeartbeatConfigError string
+
 	// syncFailures tracks consecutive git pull failures per workdir.
 	// Used to escalate logging from WARN to ERROR after repeated failures.
 	// Only accessed from heartbeat loop goroutine - no sync needed.
@@ -92,6 +97,10 @@ type Daemon struct {
 
 	// Restart tracking with exponential backoff to prevent crash loops
 	restartTracker *RestartTracker
+
+	// activeWorkRecovery performs bounded model-free repair of polecat work,
+	// independently of Deacon heartbeat liveness.
+	activeWorkRecovery *activeWorkRecovery
 
 	// telemetry exports metrics and logs to VictoriaMetrics / VictoriaLogs.
 	// Nil when telemetry is disabled (GT_OTEL_METRICS_URL / GT_OTEL_LOGS_URL not set).
@@ -921,6 +930,11 @@ func (d *Daemon) heartbeat(state *State) {
 	// This must happen before beads operations that depend on Dolt.
 	d.ensureDoltServerRunning()
 
+	// 0c. Recover actionable polecat work mechanically. This is deliberately
+	// independent of Deacon heartbeat age so normal patrol sleep never causes a
+	// model liveness prompt.
+	d.scheduleActiveWorkRecovery()
+
 	// 1. Ensure Deacon is running (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
 	if d.isPatrolActive("deacon") {
@@ -1377,7 +1391,7 @@ func (d *Daemon) ensureBootRunning() {
 	// is about rate-limiting real spawns; the idle check should re-run every
 	// heartbeat so Boot fires promptly when work actually appears.
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
-	if hb != nil && hb.IsFresh() && !d.hasActiveWork() {
+	if hb != nil && d.deaconHeartbeatFreshAt(hb, time.Now()) && !d.hasActiveWork() {
 		d.logger.Println("Boot spawn skipped: Deacon is healthy and no active work in flight")
 		return
 	}
@@ -1437,9 +1451,9 @@ func (d *Daemon) ensureBootRunning() {
 	d.logger.Println("Boot spawned successfully")
 }
 
-// hasActiveWork returns true if any bead store has in_progress or hooked beads.
-// These are the only states Boot can meaningfully act on: in_progress work may be
-// stuck, and hooked work is waiting on a polecat that may have died.
+// hasActiveWork returns true if any bead store has in_progress beads. This
+// helper remains scoped to the optional AI Boot guard. Mechanical polecat
+// recovery uses inventoryActiveWork, including actionable hooked work.
 //
 // Returns true conservatively on error or when no stores are available, so the
 // caller falls through to spawn Boot rather than suppressing it incorrectly.
@@ -1616,11 +1630,31 @@ func (d *Daemon) authorizeDeaconRestartDecision(agentID string) (allowed, crashL
 
 func (d *Daemon) deaconHeartbeatFresh(now time.Time) bool {
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
+	return d.deaconHeartbeatFreshAt(hb, now)
+}
+
+func (d *Daemon) deaconHeartbeatFreshAt(hb *deacon.Heartbeat, now time.Time) bool {
 	if hb == nil || hb.Timestamp.IsZero() {
 		return false
 	}
+	stale, _ := d.deaconHeartbeatThresholds()
 	age := now.Sub(hb.Timestamp)
-	return age >= 0 && age < deacon.HeartbeatStaleThreshold
+	return age >= 0 && age < stale
+}
+
+func (d *Daemon) deaconHeartbeatThresholds() (time.Duration, time.Duration) {
+	thresholds := d.loadOperationalConfig().GetDeaconConfig()
+	stale, veryStale, err := thresholds.HeartbeatThresholdsD()
+	if err != nil {
+		message := err.Error()
+		if message != d.deaconHeartbeatConfigError {
+			d.logger.Printf("Invalid Deacon heartbeat policy; using %s/%s defaults: %v", stale, veryStale, err)
+			d.deaconHeartbeatConfigError = message
+		}
+	} else {
+		d.deaconHeartbeatConfigError = ""
+	}
+	return stale, veryStale
 }
 
 func (d *Daemon) localModelWatchdogHealthy(now time.Time) bool {
@@ -1715,13 +1749,13 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	}
 
 	age := hb.Age()
+	staleThreshold, veryStaleThreshold := d.deaconHeartbeatThresholds()
 
-	// If heartbeat is fresh (< 5 min), nothing to do
-	if hb.IsFresh() {
+	// A fresh heartbeat resets transition logging for the next stale episode.
+	if age >= 0 && age < staleThreshold {
+		d.deaconHeartbeatStaleLogged = false
 		return
 	}
-
-	d.logger.Printf("Deacon heartbeat is stale (%s old), checking session...", age.Round(time.Minute))
 
 	// Check if session exists
 	hasSession, err := d.tmux.HasSession(sessionName)
@@ -1736,34 +1770,19 @@ func (d *Daemon) checkDeaconHeartbeat() {
 		return
 	}
 
-	// Session exists but heartbeat is stale - Deacon may be stuck.
-	// Two-tier response: nudge for stale (5-20 min), kill and restart
-	// only for very stale (>= 20 min). Kill threshold must be > backoff-max
-	// to avoid false positive kills during legitimate await-signal sleep.
-	if hb.IsVeryStale() {
+	// Session exists but heartbeat is stale. The stale band is intentionally
+	// silent; only the very-stale threshold authorizes a restart.
+	if age >= veryStaleThreshold {
 		// Stuck-agent-dog: kill and restart
 		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
 		d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat stale for %s", age.Round(time.Minute)))
 	} else {
-		// Stale but not very stale (5-20 min) - nudge to wake up (unless idle).
-		//
-		// Idle guard: skip nudge if no beads are actively in flight.
-		// This mirrors the Boot idle guard (ensureBootRunning). When the Deacon's
-		// heartbeat has gone stale during an await-signal backoff sleep, sending a
-		// nudge interrupts the exponential backoff for no reason — the Deacon will
-		// wake naturally at its next timeout. Only nudge if work is actually in
-		// flight (in_progress or hooked) that the Deacon may need to act on.
-		// Conservative: on store errors hasActiveWork returns true, so nudge fires.
-		// See also: runtime/runtime.go:99-101 — session-started nudge was removed
-		// for the same reason (it interrupted the deacon's await-signal backoff).
-		if !d.hasActiveWork() {
-			d.logger.Println("Deacon nudge skipped: no active work in flight, await-signal will fire naturally")
-			return
-		}
-
-		d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
-		if err := d.tmux.NudgeSession(sessionName, "HEALTH_CHECK: heartbeat stale, respond to confirm responsiveness"); err != nil {
-			d.logger.Printf("Error nudging stuck Deacon: %v", err)
+		// Active work is recovered independently by the mechanical per-rig
+		// scanner. Never interrupt await-signal merely to prove responsiveness.
+		if !d.deaconHeartbeatStaleLogged {
+			d.logger.Printf("Deacon heartbeat entered stale band (%s old; restart at %s); leaving await-signal uninterrupted",
+				age.Round(time.Minute), veryStaleThreshold)
+			d.deaconHeartbeatStaleLogged = true
 		}
 	}
 }

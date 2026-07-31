@@ -349,6 +349,18 @@ type DaemonThresholds struct {
 	// RecoveryHeartbeatInterval is the fixed interval for recovery-focused daemon heartbeat (default "3m").
 	RecoveryHeartbeatInterval string `json:"recovery_heartbeat_interval,omitempty"`
 
+	// ActiveWorkScanInterval is the minimum interval between unchanged mechanical
+	// recovery scans for a rig (default "10m"). A changed work fingerprint scans
+	// immediately.
+	ActiveWorkScanInterval string `json:"active_work_scan_interval,omitempty"`
+
+	// ActiveWorkScanTimeout bounds one mechanical patrol scan subprocess (default "5m").
+	ActiveWorkScanTimeout string `json:"active_work_scan_timeout,omitempty"`
+
+	// ActiveWorkScanConcurrency is the maximum number of rig scans allowed at once
+	// (default 2).
+	ActiveWorkScanConcurrency *int `json:"active_work_scan_concurrency,omitempty"`
+
 	// BootSpawnCooldown prevents Boot from spawning on every daemon heartbeat (default "2m").
 	BootSpawnCooldown string `json:"boot_spawn_cooldown,omitempty"`
 
@@ -390,10 +402,11 @@ type DeaconThresholds struct {
 	// Cooldown is minimum time between force-kills of same agent (default "5m").
 	Cooldown string `json:"cooldown,omitempty"`
 
-	// HeartbeatStaleThreshold is age at which deacon heartbeat is stale (default "5m").
+	// HeartbeatStaleThreshold is age at which deacon heartbeat is stale (default "20m").
 	HeartbeatStaleThreshold string `json:"heartbeat_stale_threshold,omitempty"`
 
-	// HeartbeatVeryStaleThreshold is age at which heartbeat is very stale (default "15m").
+	// HeartbeatVeryStaleThreshold is age at which heartbeat is very stale and the
+	// daemon may restart Deacon (default "30m").
 	HeartbeatVeryStaleThreshold string `json:"heartbeat_very_stale_threshold,omitempty"`
 
 	// MaxRedispatches is max times a bead can be re-dispatched before escalating (default 3).

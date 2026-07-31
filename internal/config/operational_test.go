@@ -113,6 +113,15 @@ func TestDaemonThresholds_Defaults(t *testing.T) {
 	if got := daemon.DeaconGracePeriodD(); got != DefaultDeaconGracePeriod {
 		t.Errorf("DeaconGracePeriod: got %v, want %v", got, DefaultDeaconGracePeriod)
 	}
+	if got := daemon.ActiveWorkScanIntervalD(); got != DefaultActiveWorkScanInterval {
+		t.Errorf("ActiveWorkScanInterval: got %v, want %v", got, DefaultActiveWorkScanInterval)
+	}
+	if got := daemon.ActiveWorkScanTimeoutD(); got != DefaultActiveWorkScanTimeout {
+		t.Errorf("ActiveWorkScanTimeout: got %v, want %v", got, DefaultActiveWorkScanTimeout)
+	}
+	if got := daemon.ActiveWorkScanConcurrencyV(); got != DefaultActiveWorkScanConcurrency {
+		t.Errorf("ActiveWorkScanConcurrency: got %v, want %v", got, DefaultActiveWorkScanConcurrency)
+	}
 }
 
 func TestDaemonThresholds_Overrides(t *testing.T) {
@@ -173,6 +182,44 @@ func TestDeaconThresholds_Defaults(t *testing.T) {
 	}
 	if got := deacon.ConsecutiveFailuresV(); got != DefaultDeaconConsecutiveFailures {
 		t.Errorf("ConsecutiveFailures: got %v, want %v", got, DefaultDeaconConsecutiveFailures)
+	}
+	stale, veryStale, err := deacon.HeartbeatThresholdsD()
+	if err != nil {
+		t.Fatalf("HeartbeatThresholdsD: %v", err)
+	}
+	if stale != 20*time.Minute || veryStale != 30*time.Minute {
+		t.Fatalf("heartbeat defaults = %s/%s, want 20m/30m", stale, veryStale)
+	}
+}
+
+func TestDeaconThresholds_HeartbeatValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		stale     string
+		veryStale string
+		wantStale time.Duration
+		wantVery  time.Duration
+		wantErr   bool
+	}{
+		{name: "valid override", stale: "25m", veryStale: "40m", wantStale: 25 * time.Minute, wantVery: 40 * time.Minute},
+		{name: "stale inside patrol backoff", stale: "15m", veryStale: "30m", wantStale: 20 * time.Minute, wantVery: 30 * time.Minute, wantErr: true},
+		{name: "restart before stale", stale: "25m", veryStale: "20m", wantStale: 20 * time.Minute, wantVery: 30 * time.Minute, wantErr: true},
+		{name: "invalid duration", stale: "eventually", veryStale: "40m", wantStale: 20 * time.Minute, wantVery: 30 * time.Minute, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &DeaconThresholds{HeartbeatStaleThreshold: tc.stale, HeartbeatVeryStaleThreshold: tc.veryStale}
+			stale, veryStale, err := d.HeartbeatThresholdsD()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if stale != tc.wantStale || veryStale != tc.wantVery {
+				t.Fatalf("thresholds = %s/%s, want %s/%s", stale, veryStale, tc.wantStale, tc.wantVery)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/polecat"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -81,11 +82,6 @@ func runHeartbeat(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// deaconBeadHeartbeatSyncThreshold throttles agent-bead label refreshes from
-// gt heartbeat: each refresh is a Dolt commit, so only sync when the label is
-// stale enough to matter to watchers.
-const deaconBeadHeartbeatSyncThreshold = deacon.HeartbeatStaleThreshold / 2
-
 var deaconAgentBeadHeartbeatSync = syncDeaconAgentBeadHeartbeat
 
 func syncDeaconHeartbeatStores(townRoot, action string) error {
@@ -109,6 +105,8 @@ func syncDeaconHeartbeatStores(townRoot, action string) error {
 func syncDeaconAgentBeadHeartbeat(townRoot string) {
 	agentBead := beads.DeaconBeadIDTown()
 	beadsDir := beads.ResolveBeadsDir(townRoot)
+	staleThreshold, _, _ := config.LoadOperationalConfig(townRoot).GetDeaconConfig().HeartbeatThresholdsD()
+	beadSyncThreshold := staleThreshold / 2
 
 	labels, err := getAllAgentLabels(agentBead, beadsDir)
 	if err != nil {
@@ -120,7 +118,7 @@ func syncDeaconAgentBeadHeartbeat(townRoot string) {
 			continue
 		}
 		if epoch, err := strconv.ParseInt(epochStr, 10, 64); err == nil {
-			if time.Since(time.Unix(epoch, 0)) < deaconBeadHeartbeatSyncThreshold {
+			if time.Since(time.Unix(epoch, 0)) < beadSyncThreshold {
 				return
 			}
 		}

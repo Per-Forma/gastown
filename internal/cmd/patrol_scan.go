@@ -71,6 +71,8 @@ type PatrolScanOutput struct {
 	Zombies     *PatrolScanZombieOutput   `json:"zombies"`
 	Stalls      *PatrolScanStallOutput    `json:"stalls,omitempty"`
 	Completions *PatrolScanCompleteOutput `json:"completions,omitempty"`
+	Orphans     *PatrolScanOrphanOutput   `json:"orphans,omitempty"`
+	Errors      []string                  `json:"errors,omitempty"`
 	Receipts    []witness.PatrolReceipt   `json:"receipts,omitempty"`
 }
 
@@ -99,6 +101,7 @@ type PatrolScanStallOutput struct {
 	Checked int                   `json:"checked"`
 	Found   int                   `json:"found"`
 	Stalls  []PatrolScanStallItem `json:"stalls,omitempty"`
+	Errors  []string              `json:"errors,omitempty"`
 }
 
 // PatrolScanStallItem is a single stall detection in scan output.
@@ -114,6 +117,24 @@ type PatrolScanCompleteOutput struct {
 	Checked   int                      `json:"checked"`
 	Found     int                      `json:"found"`
 	Completed []PatrolScanCompleteItem `json:"completed,omitempty"`
+	Errors    []string                 `json:"errors,omitempty"`
+}
+
+// PatrolScanOrphanOutput reports beads whose polecat session and worktree are
+// both gone. Recovered beads are reset for safe redispatch by the existing
+// witness recovery path.
+type PatrolScanOrphanOutput struct {
+	Checked int                    `json:"checked"`
+	Found   int                    `json:"found"`
+	Orphans []PatrolScanOrphanItem `json:"orphans,omitempty"`
+	Errors  []string               `json:"errors,omitempty"`
+}
+
+type PatrolScanOrphanItem struct {
+	BeadID    string `json:"bead_id"`
+	Assignee  string `json:"assignee"`
+	Polecat   string `json:"polecat"`
+	Recovered bool   `json:"recovered"`
 }
 
 // PatrolScanCompleteItem is a single completion discovery in scan output.
@@ -126,6 +147,7 @@ type PatrolScanCompleteItem struct {
 	Action         string `json:"action"`
 	WispCreated    string `json:"wisp_created,omitempty"`
 	CompletionTime string `json:"completion_time,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 func runPatrolScan(cmd *cobra.Command, args []string) error {
@@ -153,7 +175,7 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 
-	// Run all three detection passes.
+	// Run all four detection passes.
 	// Note: DetectZombiePolecats takes a router param but does NOT send mail
 	// internally — it only uses the router for workspace context. Notifications
 	// are sent exclusively below via --notify, avoiding double-send.
@@ -167,6 +189,9 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 	completionResult := runPatrolScanPhase(diagnostics, "completion discovery", func() *witness.DiscoverCompletionsResult {
 		return witness.DiscoverCompletions(bd, workDir, rigName, router)
 	})
+	orphanResult := runPatrolScanPhase(diagnostics, "orphan detection", func() *witness.DetectOrphanedBeadsResult {
+		return witness.DetectOrphanedBeads(bd, workDir, rigName, router)
+	})
 
 	// Build patrol receipts for zombies
 	receipts := witness.BuildPatrolReceipts(rigName, zombieResult)
@@ -175,18 +200,16 @@ func runPatrolScan(cmd *cobra.Command, args []string) error {
 	// Always notify the mayor for active-work zombies (dead polecats with hooked
 	// beads) — this is the primary mechanism for detecting failed work. (GH #3584)
 	// Use --notify=false to suppress (e.g., in dry-run/testing contexts).
-	if zombieResult != nil {
+	if shouldNotifyActiveZombies(patrolScanNotify, zombieResult) {
 		activeZombies := countActiveWorkZombies(zombieResult)
-		if activeZombies > 0 {
-			sendZombieNotification(router, rigName, zombieResult, activeZombies)
-		}
+		sendZombieNotification(router, rigName, zombieResult, activeZombies)
 	}
 
 	if patrolScanJSON {
-		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, receipts)
+		return outputPatrolScanJSON(rigName, timestamp, zombieResult, stallResult, completionResult, orphanResult, receipts)
 	}
 
-	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, receipts)
+	return outputPatrolScanHuman(rigName, zombieResult, stallResult, completionResult, orphanResult, receipts)
 }
 
 func runPatrolScanPhase[T any](diagnostics io.Writer, name string, fn func() T) T {
@@ -243,6 +266,10 @@ func countActiveWorkZombies(result *witness.DetectZombiePolecatsResult) int {
 	return count
 }
 
+func shouldNotifyActiveZombies(enabled bool, result *witness.DetectZombiePolecatsResult) bool {
+	return enabled && result != nil && countActiveWorkZombies(result) > 0
+}
+
 func sendZombieNotification(router *mail.Router, rigName string, result *witness.DetectZombiePolecatsResult, activeCount int) {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Patrol scan detected %d zombie(s) with active work in rig %s:", activeCount, rigName))
@@ -285,7 +312,7 @@ func sendZombieNotification(router *mail.Router, rigName string, result *witness
 	_ = router.Send(mayorMsg)
 }
 
-func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, receipts []witness.PatrolReceipt) error {
+func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, orphanResult *witness.DetectOrphanedBeadsResult, receipts []witness.PatrolReceipt) error {
 	output := PatrolScanOutput{
 		Rig:       rigName,
 		Timestamp: timestamp,
@@ -336,6 +363,10 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 			}
 			so.Stalls = append(so.Stalls, item)
 		}
+		for _, err := range stallResult.Errors {
+			so.Errors = append(so.Errors, err.Error())
+			output.Errors = append(output.Errors, err.Error())
+		}
 		output.Stalls = so
 	}
 
@@ -356,9 +387,41 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 				WispCreated:    d.WispCreated,
 				CompletionTime: d.CompletionTime,
 			}
+			if d.Error != nil {
+				item.Error = d.Error.Error()
+			}
 			co.Completed = append(co.Completed, item)
 		}
+		for _, err := range completionResult.Errors {
+			co.Errors = append(co.Errors, err.Error())
+			output.Errors = append(output.Errors, err.Error())
+		}
 		output.Completions = co
+	}
+
+	if orphanResult != nil {
+		oo := &PatrolScanOrphanOutput{
+			Checked: orphanResult.Checked,
+			Found:   len(orphanResult.Orphans),
+		}
+		for _, orphan := range orphanResult.Orphans {
+			oo.Orphans = append(oo.Orphans, PatrolScanOrphanItem{
+				BeadID:    orphan.BeadID,
+				Assignee:  orphan.Assignee,
+				Polecat:   orphan.PolecatName,
+				Recovered: orphan.BeadRecovered,
+			})
+		}
+		for _, err := range orphanResult.Errors {
+			oo.Errors = append(oo.Errors, err.Error())
+			output.Errors = append(output.Errors, err.Error())
+		}
+		output.Orphans = oo
+	}
+	if zombieResult != nil {
+		for _, err := range zombieResult.Errors {
+			output.Errors = append(output.Errors, err.Error())
+		}
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -366,7 +429,7 @@ func outputPatrolScanJSON(rigName, timestamp string, zombieResult *witness.Detec
 	return enc.Encode(output)
 }
 
-func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, _ []witness.PatrolReceipt) error {
+func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePolecatsResult, stallResult *witness.DetectStalledPolecatsResult, completionResult *witness.DiscoverCompletionsResult, orphanResult *witness.DetectOrphanedBeadsResult, _ []witness.PatrolReceipt) error {
 	fmt.Printf("%s Patrol scan: %s\n\n", style.Bold.Render("🔍"), rigName)
 
 	// Zombies
@@ -452,6 +515,23 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 		fmt.Println()
 	}
 
+	if orphanResult != nil && (len(orphanResult.Orphans) > 0 || patrolScanVerbose) {
+		fmt.Printf("%s Orphan Detection: checked %d assigned bead(s)\n",
+			style.Bold.Render("🧭"), orphanResult.Checked)
+		if len(orphanResult.Orphans) == 0 {
+			fmt.Printf("  %s\n", style.Dim.Render("No orphaned beads detected"))
+		} else {
+			for _, orphan := range orphanResult.Orphans {
+				action := "left unresolved"
+				if orphan.BeadRecovered {
+					action = "reset to open for redispatch"
+				}
+				fmt.Printf("  ⚠ %s (%s): %s\n", orphan.BeadID, orphan.PolecatName, action)
+			}
+		}
+		fmt.Println()
+	}
+
 	// Summary
 	zombieCount := 0
 	activeCount := 0
@@ -467,12 +547,16 @@ func outputPatrolScanHuman(rigName string, zombieResult *witness.DetectZombiePol
 	if completionResult != nil {
 		completionCount = len(completionResult.Discovered)
 	}
+	orphanCount := 0
+	if orphanResult != nil {
+		orphanCount = len(orphanResult.Orphans)
+	}
 
-	if zombieCount == 0 && stallCount == 0 && completionCount == 0 {
+	if zombieCount == 0 && stallCount == 0 && completionCount == 0 && orphanCount == 0 {
 		fmt.Printf("%s All clear — no issues detected\n", style.Success.Render("✓"))
 	} else {
-		fmt.Printf("Summary: %d zombie(s) (%d active-work), %d stall(s), %d completion(s)\n",
-			zombieCount, activeCount, stallCount, completionCount)
+		fmt.Printf("Summary: %d zombie(s) (%d active-work), %d stall(s), %d completion(s), %d orphan(s)\n",
+			zombieCount, activeCount, stallCount, completionCount, orphanCount)
 	}
 
 	return nil
