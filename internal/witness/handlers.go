@@ -2111,12 +2111,13 @@ func handleZombieRestart(bd *BdCli, workDir, rigName, polecatName, hookBead, cle
 	zombie.CleanupStatus = cleanupStatus
 	skipRestart := false
 
-	// aa-apw: If this polecat's branch work is already merged into the default
-	// branch (including via squash merge, which rewrites SHAs and fools a plain
-	// ancestor check), do NOT restart. Restarting would let the polecat push its
-	// pre-squash HEAD and create a duplicate MR for work already in main.
-	// Instead archive the polecat — its work is done.
-	if merged, err := verifyBranchAlreadyMerged(workDir, rigName, polecatName); err == nil && merged {
+	// aa-apw: If an idle polecat with no live hook has branch work already merged
+	// into the default branch, archive it instead of restarting it and risking a
+	// duplicate MR. An actionable hook is authoritative, though: the mechanical
+	// recovery contract preserves the worktree, branch, hook, and assignment by
+	// restarting the session. The normal completion path can reconcile stale
+	// merged work after the worker is healthy again.
+	if merged, err := verifyBranchAlreadyMerged(workDir, rigName, polecatName); err == nil && merged && shouldArchiveMergedZombie(hookBead) {
 		zombie.Action = "archived-work-already-merged (aa-apw)"
 		if nukeErr := NukePolecat(bd, workDir, rigName, polecatName); nukeErr != nil {
 			zombie.Error = fmt.Errorf("archive: %w", nukeErr)
@@ -2207,6 +2208,10 @@ func handleZombieRestart(bd *BdCli, workDir, rigName, polecatName, hookBead, cle
 			zombie.Action = fmt.Sprintf("restart-failed: %v", err)
 		}
 	}
+}
+
+func shouldArchiveMergedZombie(hookBead string) bool {
+	return strings.TrimSpace(hookBead) == ""
 }
 
 // SpawnGracePeriod is how long to wait before treating a spawning polecat as a
