@@ -2587,13 +2587,19 @@ func fetchAgentBeadSnapshot(bd *BdCli, workDir, agentBeadID string) *agentBeadSn
 		return nil
 	}
 
+	fields := beads.ParseAgentFields(issues[0].Description)
+	hookBead := strings.TrimSpace(issues[0].HookBead)
+	if hookBead == "" && fields != nil {
+		hookBead = strings.TrimSpace(fields.HookBead)
+	}
+
 	return &agentBeadSnapshot{
 		AgentState: beads.ResolveAgentState(issues[0].Description, issues[0].AgentState),
-		HookBead:   issues[0].HookBead,
+		HookBead:   hookBead,
 		Labels:     issues[0].Labels,
 		UpdatedAt:  issues[0].UpdatedAt,
 		ActiveMR:   issues[0].ActiveMR,
-		Fields:     beads.ParseAgentFields(issues[0].Description),
+		Fields:     fields,
 	}
 }
 

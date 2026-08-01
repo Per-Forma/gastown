@@ -2803,6 +2803,24 @@ func TestShouldArchiveMergedZombiePreservesActionableHook(t *testing.T) {
 	}
 }
 
+func TestFetchAgentBeadSnapshotFallsBackToDescriptionHook(t *testing.T) {
+	t.Parallel()
+	bd, _ := mockBd(
+		func(args []string) (string, error) {
+			return `[{"agent_state":"working","description":"Agent: testrig/polecats/scavenger\n\nrole_type: polecat\nhook_bead: ma-poc.4"}]`, nil
+		},
+		func(args []string) error { return nil },
+	)
+
+	snap := fetchAgentBeadSnapshot(bd, t.TempDir(), "gt-testrig-polecat-scavenger")
+	if snap == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if snap.HookBead != "ma-poc.4" {
+		t.Fatalf("HookBead = %q, want description fallback ma-poc.4", snap.HookBead)
+	}
+}
+
 // TestHandleZombieRestart_RestartsWhenBranchNotMerged verifies the pre-aa-apw
 // behavior is preserved when work is NOT merged: handleZombieRestart proceeds
 // to its normal cleanup/restart flow.
