@@ -100,7 +100,8 @@ type Daemon struct {
 
 	// activeWorkRecovery performs bounded model-free repair of polecat work,
 	// independently of Deacon heartbeat liveness.
-	activeWorkRecovery *activeWorkRecovery
+	activeWorkRecovery             *activeWorkRecovery
+	activeWorkInventoryUnavailable bool
 
 	// telemetry exports metrics and logs to VictoriaMetrics / VictoriaLogs.
 	// Nil when telemetry is disabled (GT_OTEL_METRICS_URL / GT_OTEL_LOGS_URL not set).

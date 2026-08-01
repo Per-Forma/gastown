@@ -38,6 +38,10 @@ func (i activeWorkItem) fingerprintPart() string {
 type activeWorkInventory struct {
 	ByRig       map[string][]activeWorkItem
 	Unrouteable []activeWorkItem
+	// Available is false only when no beads store could be opened at all. That
+	// is a town-wide storage outage, not evidence that every rig's recovery
+	// failed, so callers must defer scans without advancing failure counters.
+	Available bool
 }
 
 type activeWorkRecoveryState struct {
@@ -446,11 +450,9 @@ func (d *Daemon) inventoryActiveWork() activeWorkInventory {
 		}
 	}
 	if len(stores) == 0 {
-		for _, rigName := range d.getKnownRigs() {
-			inventory.ByRig[rigName] = []activeWorkItem{{ID: "inventory-unavailable", Status: "error", Assignee: rigName}}
-		}
 		return inventory
 	}
+	inventory.Available = true
 
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
@@ -509,8 +511,20 @@ func routeActiveWork(storeName, assignee string) (rigName string, polecatAssigne
 }
 
 func (d *Daemon) scheduleActiveWorkRecovery() {
+	inventory := d.inventoryActiveWork()
+	if !inventory.Available {
+		if !d.activeWorkInventoryUnavailable {
+			d.logger.Printf("Mechanical active-work recovery deferred: no beads stores are available")
+			d.activeWorkInventoryUnavailable = true
+		}
+		return
+	}
+	if d.activeWorkInventoryUnavailable {
+		d.logger.Printf("Mechanical active-work recovery resumed: beads stores are available")
+		d.activeWorkInventoryUnavailable = false
+	}
 	if d.activeWorkRecovery == nil {
 		d.activeWorkRecovery = newActiveWorkRecovery(d.config.TownRoot, d.gtPath, d.logger, d.ctx, d.loadOperationalConfig().GetDaemonConfig())
 	}
-	d.activeWorkRecovery.schedule(d.inventoryActiveWork())
+	d.activeWorkRecovery.schedule(inventory)
 }

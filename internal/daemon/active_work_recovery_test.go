@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +65,9 @@ func TestInventoryActiveWorkRoutesOnlyActionableIssues(t *testing.T) {
 	}
 
 	inventory := d.inventoryActiveWork()
+	if !inventory.Available {
+		t.Fatal("inventory unexpectedly unavailable")
+	}
 	if got := len(inventory.ByRig["gastown"]); got != 1 || inventory.ByRig["gastown"][0].ID != "gt-work" {
 		t.Fatalf("gastown inventory = %+v, want only gt-work", inventory.ByRig["gastown"])
 	}
@@ -71,6 +76,51 @@ func TestInventoryActiveWorkRoutesOnlyActionableIssues(t *testing.T) {
 	}
 	if got := len(inventory.Unrouteable); got != 1 || inventory.Unrouteable[0].ID != "hq-malformed" {
 		t.Fatalf("unrouteable = %+v, want only hq-malformed", inventory.Unrouteable)
+	}
+}
+
+func TestInventoryActiveWorkReportsGlobalStoreOutage(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		config: &Config{TownRoot: t.TempDir()},
+		logger: log.New(io.Discard, "", 0),
+		ctx:    context.Background(),
+	}
+
+	inventory := d.inventoryActiveWork()
+	if inventory.Available {
+		t.Fatal("inventory reported available with no open beads stores")
+	}
+	if len(inventory.ByRig) != 0 {
+		t.Fatalf("global store outage produced per-rig recovery work: %+v", inventory.ByRig)
+	}
+}
+
+func TestScheduleActiveWorkRecoveryDeduplicatesGlobalStoreOutage(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	d := &Daemon{
+		config: &Config{TownRoot: t.TempDir()},
+		logger: log.New(&logs, "", 0),
+		ctx:    context.Background(),
+	}
+
+	d.scheduleActiveWorkRecovery()
+	d.scheduleActiveWorkRecovery()
+	if got := strings.Count(logs.String(), "active-work recovery deferred"); got != 1 {
+		t.Fatalf("deferred log count = %d, want 1; logs: %s", got, logs.String())
+	}
+	if d.activeWorkRecovery != nil {
+		t.Fatal("global store outage initialized active-work recovery")
+	}
+
+	d.beadsStores = map[string]beadsdk.Storage{"hq": &searchStorage{}}
+	d.scheduleActiveWorkRecovery()
+	if got := strings.Count(logs.String(), "active-work recovery resumed"); got != 1 {
+		t.Fatalf("resumed log count = %d, want 1; logs: %s", got, logs.String())
+	}
+	if d.activeWorkRecovery == nil {
+		t.Fatal("available store did not initialize active-work recovery")
 	}
 }
 
