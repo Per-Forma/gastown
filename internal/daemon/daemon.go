@@ -1537,6 +1537,9 @@ func (d *Daemon) ensureDeaconRunningWithManager(mgr deaconProbeManager) {
 	}
 
 	if crashLoopProbe && d.deaconHeartbeatFresh(d.restartTracker.now()) {
+		if hb := deacon.ReadHeartbeat(d.config.TownRoot); hb != nil {
+			d.restartTracker.RecordProgress(agentID, hb.Timestamp)
+		}
 		d.restartTracker.RecordSuccess(agentID)
 		if err := d.restartTracker.Save(); err != nil {
 			d.logger.Printf("Warning: failed to persist stable Deacon crash-loop recovery: %v", err)
@@ -1719,7 +1722,7 @@ func (d *Daemon) checkDeaconHeartbeat() {
 			// Stuck-agent-dog: kill and restart
 			d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
 				timeSinceStart.Round(time.Minute), sessionName)
-			d.restartStuckDeacon(sessionName, fmt.Sprintf("no heartbeat after %s", timeSinceStart.Round(time.Minute)))
+			d.restartStuckDeacon(sessionName, fmt.Sprintf("no heartbeat after %s", timeSinceStart.Round(time.Minute)), true)
 			return
 		}
 
@@ -1735,11 +1738,17 @@ func (d *Daemon) checkDeaconHeartbeat() {
 			// Stuck-agent-dog: kill and restart
 			d.logger.Printf("STUCK DEACON: started %s ago but heartbeat still pre-restart (session: %s)",
 				timeSinceStart.Round(time.Minute), sessionName)
-			d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat pre-restart after %s", timeSinceStart.Round(time.Minute)))
+			d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat pre-restart after %s", timeSinceStart.Round(time.Minute)), true)
 			return
 		}
 
 		// Heartbeat is from AFTER we started - Deacon has written at least one heartbeat
+		if d.restartTracker != nil && d.restartTracker.RecordProgress("deacon", hb.Timestamp) {
+			if err := d.restartTracker.Save(); err != nil {
+				d.logger.Printf("Warning: failed to persist Deacon post-start progress: %v", err)
+			}
+		}
+		d.deaconLastStarted = time.Time{}
 		// Fall through to normal staleness check
 	}
 
@@ -1776,7 +1785,7 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	if age >= veryStaleThreshold {
 		// Stuck-agent-dog: kill and restart
 		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
-		d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat stale for %s", age.Round(time.Minute)))
+		d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat stale for %s", age.Round(time.Minute)), false)
 	} else {
 		// Active work is recovered independently by the mechanical per-rig
 		// scanner. Never interrupt await-signal merely to prove responsiveness.
@@ -1791,7 +1800,7 @@ func (d *Daemon) checkDeaconHeartbeat() {
 // restartStuckDeacon kills a stuck Deacon session and respawns it.
 // Uses RestartTracker for exponential backoff and crash-loop prevention.
 // Notifies via gt-notify (zero token cost) if the notify script exists.
-func (d *Daemon) restartStuckDeacon(sessionName, reason string) {
+func (d *Daemon) restartStuckDeacon(sessionName, reason string, startupFailure bool) {
 	const agentID = "deacon"
 
 	// Check restart tracker before acting
@@ -1799,6 +1808,21 @@ func (d *Daemon) restartStuckDeacon(sessionName, reason string) {
 		if d.restartTracker.IsInCrashLoop(agentID) {
 			d.logger.Printf("Stuck-agent-dog: Deacon in crash loop, not restarting (use 'gt daemon clear-backoff deacon')")
 			return
+		}
+		if startupFailure {
+			newlyLatched := d.restartTracker.RecordStartupFailure(agentID)
+			if err := d.restartTracker.Save(); err != nil {
+				d.logger.Printf("Warning: failed to persist Deacon startup failure: %v", err)
+				return
+			}
+			if newlyLatched {
+				d.logger.Printf("Stuck-agent-dog: consecutive Deacon startup failures latched; stopping session without respawn")
+				if err := d.tmux.KillSession(sessionName); err != nil {
+					d.logger.Printf("Stuck-agent-dog: error stopping latched session %s: %v", sessionName, err)
+				}
+				d.retryDeaconCrashLoopAlertWithNotification(agentID, sendModelCrashNotification)
+				return
+			}
 		}
 		if !d.restartTracker.CanRestart(agentID) {
 			remaining := d.restartTracker.GetBackoffRemaining(agentID)
@@ -1847,8 +1871,8 @@ func (d *Daemon) restartStuckDeacon(sessionName, reason string) {
 		return
 	}
 
-	d.logger.Printf("Stuck-agent-dog: Deacon restarted successfully")
-	d.notifySlack("admin", "high", fmt.Sprintf("Deacon was stuck (%s) — auto-restarted successfully", reason))
+	d.logger.Printf("Stuck-agent-dog: Deacon session respawned; awaiting fresh post-start heartbeat")
+	d.notifySlack("admin", "high", fmt.Sprintf("Deacon was stuck (%s) — session respawned and is awaiting durable heartbeat progress", reason))
 }
 
 func (d *Daemon) alertDeaconCrashLoopLatch() {
@@ -1856,7 +1880,7 @@ func (d *Daemon) alertDeaconCrashLoopLatch() {
 }
 
 func (d *Daemon) alertDeaconCrashLoopLatchWithNotification(notify func(string, string) error) error {
-	const message = "Deacon crash loop latched after rapid local restart failures. Hosted promotion is disabled; one local watchdog probe is allowed every 30 minutes."
+	const message = "Deacon crash loop latched after local restart failures without durable post-start progress. Hosted promotion is disabled; one local watchdog probe is allowed every 30 minutes."
 	const subject = "DEACON_CRASH_LOOP_LATCHED"
 	d.logger.Printf("DEACON CRASH LOOP LATCHED: %s", message)
 	d.notifySlack("admin", "critical", message)

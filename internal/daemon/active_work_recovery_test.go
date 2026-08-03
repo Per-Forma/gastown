@@ -230,6 +230,43 @@ func TestActiveWorkRecoveryEscalatesRepeatedFailureOnce(t *testing.T) {
 	}
 }
 
+func TestActiveWorkRecoveryRequiresFingerprintProgressAfterReportedRecovery(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cfg := &config.DaemonThresholds{ActiveWorkScanInterval: "1ms"}
+	r := newActiveWorkRecovery(root, "gt", log.New(io.Discard, "", 0), context.Background(), cfg)
+	r.runScan = func(context.Context, string) (*patrolScanSummary, error) {
+		summary := &patrolScanSummary{}
+		summary.Zombies.Found = 1
+		return summary, nil
+	}
+	var mu sync.Mutex
+	mailCount := 0
+	r.sendMail = func(_, _, _ string) error {
+		mu.Lock()
+		mailCount++
+		mu.Unlock()
+		return nil
+	}
+	items := activeWorkInventory{ByRig: map[string][]activeWorkItem{
+		"gastown": {{ID: "gt-1", Status: "in_progress", Assignee: "gastown/polecats/rust"}},
+	}}
+
+	r.schedule(items)
+	waitForRecoveryState(t, r, "gastown", "verification-pending:recovered:1")
+	for attempt := 1; attempt <= 2; attempt++ {
+		time.Sleep(2 * time.Millisecond)
+		r.schedule(items)
+		waitForRecoveryState(t, r, "gastown", "failed")
+	}
+	mu.Lock()
+	got := mailCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("unchanged reported recovery escalation count = %d, want 1", got)
+	}
+}
+
 func TestActiveWorkRecoveryHonorsTimeout(t *testing.T) {
 	t.Parallel()
 	cfg := &config.DaemonThresholds{ActiveWorkScanTimeout: "20ms"}

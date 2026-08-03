@@ -29,6 +29,11 @@ type RestartTrackerConfig struct {
 	// CrashLoopCount is how many restarts within the window trigger crash-loop state (default 5).
 	CrashLoopCount int `json:"crash_loop_count,omitempty"`
 
+	// StartupFailureLimit is how many consecutive starts without durable
+	// post-start progress trigger crash-loop state (default 2). Unlike
+	// CrashLoopCount, this streak is intentionally independent of time windows.
+	StartupFailureLimit int `json:"startup_failure_limit,omitempty"`
+
 	// StabilityPeriod is how long an agent must run without restarting
 	// before its backoff resets (default 30m).
 	StabilityPeriod time.Duration `json:"stability_period,omitempty"`
@@ -55,6 +60,7 @@ func DefaultRestartTrackerConfig() RestartTrackerConfig {
 		BackoffMultiplier:      2.0,
 		CrashLoopWindow:        15 * time.Minute,
 		CrashLoopCount:         5,
+		StartupFailureLimit:    2,
 		StabilityPeriod:        30 * time.Minute,
 		PauseBackoff:           60 * time.Second,
 		CrashLoopProbeInterval: 30 * time.Minute,
@@ -78,6 +84,9 @@ func (c RestartTrackerConfig) withDefaults() RestartTrackerConfig {
 	}
 	if c.CrashLoopCount <= 0 {
 		c.CrashLoopCount = d.CrashLoopCount
+	}
+	if c.StartupFailureLimit <= 0 {
+		c.StartupFailureLimit = d.StartupFailureLimit
 	}
 	if c.StabilityPeriod <= 0 {
 		c.StabilityPeriod = d.StabilityPeriod
@@ -109,13 +118,17 @@ type RestartState struct {
 
 // AgentRestartInfo tracks restart info for a single agent.
 type AgentRestartInfo struct {
-	LastRestart           time.Time   `json:"last_restart"`
-	RestartCount          int         `json:"restart_count"`
-	RecentRestarts        []time.Time `json:"recent_restarts,omitempty"`
-	BackoffUntil          time.Time   `json:"backoff_until"`
-	CrashLoopSince        time.Time   `json:"crash_loop_since,omitempty"`
-	LastWatchdogProbe     time.Time   `json:"last_watchdog_probe,omitempty"`
-	CrashLoopAlertPending bool        `json:"crash_loop_alert_pending,omitempty"`
+	LastRestart                time.Time   `json:"last_restart"`
+	RestartCount               int         `json:"restart_count"`
+	RecentRestarts             []time.Time `json:"recent_restarts,omitempty"`
+	BackoffUntil               time.Time   `json:"backoff_until"`
+	CrashLoopSince             time.Time   `json:"crash_loop_since,omitempty"`
+	LastWatchdogProbe          time.Time   `json:"last_watchdog_probe,omitempty"`
+	CrashLoopAlertPending      bool        `json:"crash_loop_alert_pending,omitempty"`
+	PendingStartAt             time.Time   `json:"pending_start_at,omitempty"`
+	LastStartupFailureAt       time.Time   `json:"last_startup_failure_at,omitempty"`
+	LastProgressAt             time.Time   `json:"last_progress_at,omitempty"`
+	ConsecutiveStartupFailures int         `json:"consecutive_startup_failures,omitempty"`
 }
 
 // NewRestartTracker creates a new restart tracker with the given config.
@@ -246,9 +259,12 @@ func (rt *RestartTracker) RecordRestart(agentID string) bool {
 		// Reset backoff - agent was stable
 		info.RestartCount = 0
 		info.RecentRestarts = nil
+		info.ConsecutiveStartupFailures = 0
+		info.LastStartupFailureAt = time.Time{}
 	}
 
 	info.LastRestart = now
+	info.PendingStartAt = now
 	info.RestartCount++
 	if info.CrashLoopSince.IsZero() {
 		cutoff := now.Add(-rt.config.CrashLoopWindow)
@@ -279,6 +295,51 @@ func (rt *RestartTracker) RecordRestart(agentID string) bool {
 		newlyLatched = true
 	}
 	return newlyLatched
+}
+
+// RecordStartupFailure records one failed start generation. Repeated checks
+// of the same pending start are deduplicated, and the consecutive streak is
+// independent of CrashLoopWindow so slow failures cannot evade the latch.
+func (rt *RestartTracker) RecordStartupFailure(agentID string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	if rt.loadErr != nil {
+		return false
+	}
+	info, exists := rt.state.Agents[agentID]
+	if !exists || info.PendingStartAt.IsZero() || info.PendingStartAt.Equal(info.LastStartupFailureAt) {
+		return false
+	}
+	info.LastStartupFailureAt = info.PendingStartAt
+	info.ConsecutiveStartupFailures++
+	if info.CrashLoopSince.IsZero() &&
+		info.ConsecutiveStartupFailures >= rt.config.StartupFailureLimit {
+		info.CrashLoopSince = rt.now()
+		info.CrashLoopAlertPending = true
+		return true
+	}
+	return false
+}
+
+// RecordProgress records durable progress newer than the pending start. It
+// closes the pending-start generation but retains the failure streak until
+// RecordSuccess observes the configured stability period.
+func (rt *RestartTracker) RecordProgress(agentID string, progressAt time.Time) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	info, exists := rt.state.Agents[agentID]
+	if !exists || progressAt.IsZero() ||
+		(!info.PendingStartAt.IsZero() && progressAt.Before(info.PendingStartAt)) ||
+		(!info.LastProgressAt.IsZero() && !progressAt.After(info.LastProgressAt)) {
+		return false
+	}
+	info.LastProgressAt = progressAt
+	if !info.PendingStartAt.IsZero() && !progressAt.Before(info.PendingStartAt) {
+		info.PendingStartAt = time.Time{}
+	}
+	return true
 }
 
 // RecordPause records that an agent is paused due to a transient external
@@ -316,9 +377,13 @@ func (rt *RestartTracker) RecordSuccess(agentID string) {
 	}
 
 	// If agent has been stable for the stability period, reset tracking
-	if rt.now().Sub(info.LastRestart) >= rt.config.StabilityPeriod {
+	if !info.LastProgressAt.Before(info.LastRestart) &&
+		rt.now().Sub(info.LastRestart) >= rt.config.StabilityPeriod {
 		info.RestartCount = 0
 		info.RecentRestarts = nil
+		info.ConsecutiveStartupFailures = 0
+		info.PendingStartAt = time.Time{}
+		info.LastStartupFailureAt = time.Time{}
 		info.CrashLoopSince = time.Time{}
 		info.BackoffUntil = time.Time{}
 		info.LastWatchdogProbe = time.Time{}
@@ -452,6 +517,9 @@ func (rt *RestartTracker) ClearCrashLoop(agentID string) {
 		info.BackoffUntil = time.Time{}
 		info.LastWatchdogProbe = time.Time{}
 		info.CrashLoopAlertPending = false
+		info.ConsecutiveStartupFailures = 0
+		info.PendingStartAt = time.Time{}
+		info.LastStartupFailureAt = time.Time{}
 	}
 }
 

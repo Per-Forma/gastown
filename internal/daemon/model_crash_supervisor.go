@@ -38,6 +38,7 @@ type modelCrashSession struct {
 	Role        string
 	Agent       string
 	WorkUnit    string
+	WorkState   string
 	WorkDir     string
 	Output      string
 	HeartbeatAt time.Time
@@ -221,6 +222,20 @@ func (s *modelCrashSupervisor) Scan() error {
 			continue
 		}
 		current := s.state.Sessions[candidate.Identity]
+		if candidate.Role == "polecat" && contradictoryPolecatWorkState(candidate.WorkState) {
+			if current != nil {
+				delete(s.state.Sessions, candidate.Identity)
+				changed = true
+			}
+			key := candidate.Identity + ":work-state:" + candidate.WorkState
+			if s.alertOnce(key, fmt.Sprintf(
+				"Polecat %s has contradictory work state %q. Automated restart and hosted continuation are suppressed; preserve its worktree and reconcile the canonical issue assignment before recovery.",
+				candidate.Identity, candidate.WorkState,
+			)) {
+				changed = true
+			}
+			continue
+		}
 		if candidate.Role == "polecat" || candidate.Role == "dog" {
 			workUnit := strings.TrimSpace(candidate.WorkUnit)
 			if current != nil && current.WorkUnit != workUnit {
@@ -361,6 +376,10 @@ func (s *modelCrashSupervisor) Scan() error {
 		return s.save()
 	}
 	return nil
+}
+
+func contradictoryPolecatWorkState(state string) bool {
+	return strings.HasPrefix(state, "ghost-") || state == "inconsistent"
 }
 
 // handleStall advances the time-based local-first ladder for an active worker

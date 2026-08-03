@@ -61,11 +61,13 @@ func (e *daemonModelCrashExecutor) Sessions() ([]modelCrashSession, error) {
 		}
 		switch role {
 		case "polecat":
-			workUnit, active, workErr := e.polecatWorkUnit(candidate)
+			workUnit, workState, workErr := e.polecatWorkState(candidate)
 			if workErr != nil {
-				continue
+				candidate.WorkState = "inconsistent"
+			} else {
+				candidate.WorkState = workState
 			}
-			if !active {
+			if workState != "active" {
 				result = append(result, candidate)
 				continue
 			}
@@ -237,30 +239,35 @@ func (e *daemonModelCrashExecutor) ActivePolecat(candidate modelCrashSession) bo
 }
 
 func (e *daemonModelCrashExecutor) polecatWorkUnit(candidate modelCrashSession) (string, bool, error) {
+	workUnit, state, err := e.polecatWorkState(candidate)
+	return workUnit, state == "active", err
+}
+
+func (e *daemonModelCrashExecutor) polecatWorkState(candidate modelCrashSession) (string, string, error) {
 	if candidate.Role != "polecat" {
-		return "", false, fmt.Errorf("role %q is not a polecat", candidate.Role)
+		return "", "inconsistent", fmt.Errorf("role %q is not a polecat", candidate.Role)
 	}
 	parts := strings.Split(candidate.Identity, "/")
 	if len(parts) != 3 {
-		return "", false, fmt.Errorf("invalid polecat identity %q", candidate.Identity)
+		return "", "inconsistent", fmt.Errorf("invalid polecat identity %q", candidate.Identity)
 	}
 	rigName, polecatName := parts[0], parts[2]
 	prefix := beads.GetPrefixForRig(e.daemon.config.TownRoot, rigName)
 	agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
 	info, err := e.daemon.getAgentBeadInfo(agentBeadID)
 	if err != nil {
-		return "", false, err
+		return "", "inconsistent", err
 	}
-	workUnit, active := modelCrashPolecatWorkUnit(info, false, candidate.Identity, candidate.Identity)
-	if !active {
-		return "", false, nil
+	workUnit, state := modelCrashPolecatWorkState(info, false, candidate.Identity, candidate.Identity)
+	if state != "active" {
+		return "", state, nil
 	}
 	assignee, open, err := e.modelCrashHookAssignment(workUnit)
 	if err != nil {
-		return "", false, err
+		return "", "inconsistent", err
 	}
-	workUnit, active = modelCrashPolecatWorkUnit(info, !open, assignee, candidate.Identity)
-	return workUnit, active, nil
+	workUnit, state = modelCrashPolecatWorkState(info, !open, assignee, candidate.Identity)
+	return workUnit, state, nil
 }
 
 func (e *daemonModelCrashExecutor) modelCrashHookAssignment(beadID string) (string, bool, error) {
@@ -291,19 +298,33 @@ func modelCrashPolecatWorkUnit(
 	hookClosed bool,
 	hookAssignee, candidateIdentity string,
 ) (string, bool) {
+	workUnit, state := modelCrashPolecatWorkState(info, hookClosed, hookAssignee, candidateIdentity)
+	return workUnit, state == "active"
+}
+
+func modelCrashPolecatWorkState(
+	info *AgentBeadInfo,
+	hookClosed bool,
+	hookAssignee, candidateIdentity string,
+) (string, string) {
 	if info == nil {
-		return "", false
+		return "", "idle"
 	}
 	workUnit := strings.TrimSpace(info.HookBead)
-	if workUnit == "" || hookClosed ||
-		strings.TrimSpace(hookAssignee) != strings.TrimSpace(candidateIdentity) {
-		return "", false
+	if workUnit == "" {
+		return "", "idle"
 	}
 	switch beads.AgentState(info.State) {
 	case beads.AgentStateDone, beads.AgentStateNuked:
-		return "", false
+		return "", "ghost-agent-" + string(beads.AgentState(info.State))
 	}
-	return workUnit, true
+	if hookClosed {
+		return "", "ghost-closed"
+	}
+	if strings.TrimSpace(hookAssignee) != strings.TrimSpace(candidateIdentity) {
+		return "", "ghost-reassigned"
+	}
+	return workUnit, "active"
 }
 
 func modelCrashDogWorkUnit(candidate *dog.Dog) (string, bool) {

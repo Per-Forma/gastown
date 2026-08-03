@@ -51,6 +51,8 @@ type activeWorkRecoveryState struct {
 
 type activeWorkRigState struct {
 	Fingerprint              string    `json:"fingerprint,omitempty"`
+	VerificationFingerprint  string    `json:"verification_fingerprint,omitempty"`
+	VerificationOutcome      string    `json:"verification_outcome,omitempty"`
 	LastAttempt              time.Time `json:"last_attempt,omitempty"`
 	LastSuccess              time.Time `json:"last_success,omitempty"`
 	LastOutcome              string    `json:"last_outcome,omitempty"`
@@ -230,7 +232,12 @@ func (r *activeWorkRecovery) schedule(inventory activeWorkInventory) {
 		}
 		changed := state.Fingerprint != fingerprint
 		if changed {
+			if state.VerificationFingerprint != "" {
+				state.LastSuccess = now
+			}
 			state.Fingerprint = fingerprint
+			state.VerificationFingerprint = ""
+			state.VerificationOutcome = ""
 			state.ConsecutiveFailures = 0
 			state.LastFailure = ""
 			state.LastEscalatedFingerprint = ""
@@ -250,6 +257,8 @@ func (r *activeWorkRecovery) schedule(inventory activeWorkInventory) {
 		}
 		if state.Fingerprint != "" {
 			state.Fingerprint = ""
+			state.VerificationFingerprint = ""
+			state.VerificationOutcome = ""
 			state.ConsecutiveFailures = 0
 			state.LastFailure = ""
 			state.LastEscalatedFingerprint = ""
@@ -296,6 +305,26 @@ func (r *activeWorkRecovery) finish(rigName, fingerprint string, summary *patrol
 		_ = r.saveLocked()
 		r.mu.Unlock()
 		return
+	}
+	if failure == "" && state.VerificationFingerprint == fingerprint {
+		failure = fmt.Sprintf(
+			"patrol previously reported %s but the active-work fingerprint did not change",
+			state.VerificationOutcome,
+		)
+	}
+	if failure == "" {
+		outcome := summary.outcome()
+		if strings.HasPrefix(outcome, "recovered:") {
+			state.VerificationFingerprint = fingerprint
+			state.VerificationOutcome = outcome
+			state.LastOutcome = "verification-pending:" + outcome
+			_ = r.saveLocked()
+			r.mu.Unlock()
+			if r.logger != nil {
+				r.logger.Printf("Mechanical active-work recovery for %s reported %s; awaiting fingerprint progress", rigName, outcome)
+			}
+			return
+		}
 	}
 	if failure == "" {
 		state.LastSuccess = now
@@ -346,6 +375,8 @@ func (r *activeWorkRecovery) recordUnrouteable(items []activeWorkItem) {
 		r.mu.Lock()
 		if state := r.state.Rigs[stateKey]; state != nil && state.Fingerprint != "" {
 			state.Fingerprint = ""
+			state.VerificationFingerprint = ""
+			state.VerificationOutcome = ""
 			state.ConsecutiveFailures = 0
 			state.LastOutcome = "idle"
 			state.LastEscalatedFingerprint = ""

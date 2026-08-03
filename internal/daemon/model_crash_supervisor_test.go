@@ -77,6 +77,60 @@ func TestModelCrashWorkerWorkUnitExtraction(t *testing.T) {
 	}
 }
 
+func TestModelCrashPolecatWorkStateClassifiesContradictions(t *testing.T) {
+	const identity = "rig/polecats/slit"
+	working := &AgentBeadInfo{HookBead: "gt-hook", State: string(beads.AgentStateWorking)}
+	tests := []struct {
+		name     string
+		info     *AgentBeadInfo
+		closed   bool
+		assignee string
+		want     string
+	}{
+		{name: "active", info: working, assignee: identity, want: "active"},
+		{name: "closed", info: working, closed: true, assignee: identity, want: "ghost-closed"},
+		{name: "reassigned", info: working, assignee: "rig/polecats/other", want: "ghost-reassigned"},
+		{name: "done with hook", info: &AgentBeadInfo{HookBead: "gt-hook", State: string(beads.AgentStateDone)}, assignee: identity, want: "ghost-agent-done"},
+		{name: "no hook", info: &AgentBeadInfo{}, assignee: identity, want: "idle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got := modelCrashPolecatWorkState(tt.info, tt.closed, tt.assignee, identity)
+			if got != tt.want {
+				t.Fatalf("work state = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelCrashSupervisorAlertsOnceForContradictoryPolecatState(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	clock := &fakeModelCrashClock{now: now}
+	executor := &fakeModelCrashExecutor{
+		sessions: []modelCrashSession{{
+			Name: "rig-slash", Identity: "rig/polecats/slit", Role: "polecat",
+			Agent: "opencode-local", WorkState: "ghost-closed",
+		}},
+		watchdog: healthyWatchdog(now),
+	}
+	supervisor := newTestModelCrashSupervisor(t, clock, executor)
+	if err := supervisor.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	alerts := 0
+	for _, action := range executor.actions {
+		if action.kind == "alert" {
+			alerts++
+		}
+	}
+	if alerts != 1 {
+		t.Fatalf("contradictory-state alert count = %d, want 1; actions=%#v", alerts, executor.actions)
+	}
+}
+
 type fakeModelCrashClock struct {
 	now time.Time
 }

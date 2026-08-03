@@ -138,6 +138,72 @@ func TestRestartTrackerWidelySpacedRestartsDoNotLatch(t *testing.T) {
 	}
 }
 
+func TestRestartTrackerConsecutiveStartupFailuresLatchAcrossWindow(t *testing.T) {
+	clock := &restartTrackerTestClock{now: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)}
+	root := t.TempDir()
+	cfg := RestartTrackerConfig{
+		CrashLoopCount:      5,
+		CrashLoopWindow:     15 * time.Minute,
+		StabilityPeriod:     30 * time.Minute,
+		StartupFailureLimit: 2,
+	}
+	rt := newRestartTrackerWithClock(root, cfg, clock.Now)
+	rt.RecordRestart("deacon")
+	if rt.RecordStartupFailure("deacon") {
+		t.Fatal("first failed start latched the crash loop")
+	}
+	if rt.RecordStartupFailure("deacon") {
+		t.Fatal("duplicate observation of one start generation latched")
+	}
+	if err := rt.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Advance(13 * time.Minute)
+	reloaded := newRestartTrackerWithClock(root, cfg, clock.Now)
+	if err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded.RecordRestart("deacon")
+	if !reloaded.RecordStartupFailure("deacon") {
+		t.Fatal("second consecutive startup failure did not latch")
+	}
+	if !reloaded.IsInCrashLoop("deacon") {
+		t.Fatal("startup-failure latch was not retained")
+	}
+	if got := len(reloaded.state.Agents["deacon"].RecentRestarts); got >= cfg.CrashLoopCount {
+		t.Fatalf("ordinary rapid-restart threshold unexpectedly drove latch: %d", got)
+	}
+}
+
+func TestRestartTrackerStartupFailureStreakClearsOnlyAfterProgressAndStability(t *testing.T) {
+	clock := &restartTrackerTestClock{now: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)}
+	rt := newRestartTrackerWithClock(t.TempDir(), RestartTrackerConfig{
+		StabilityPeriod:     30 * time.Minute,
+		StartupFailureLimit: 2,
+	}, clock.Now)
+	rt.RecordRestart("deacon")
+	rt.RecordStartupFailure("deacon")
+
+	clock.Advance(time.Minute)
+	rt.RecordRestart("deacon")
+	clock.Advance(time.Minute)
+	if !rt.RecordProgress("deacon", clock.Now()) {
+		t.Fatal("fresh post-start heartbeat was not recorded as progress")
+	}
+	rt.RecordSuccess("deacon")
+	if got := rt.state.Agents["deacon"].ConsecutiveStartupFailures; got != 1 {
+		t.Fatalf("failure streak cleared before stability: got %d, want 1", got)
+	}
+
+	clock.Advance(29 * time.Minute)
+	rt.RecordSuccess("deacon")
+	info := rt.state.Agents["deacon"]
+	if info.ConsecutiveStartupFailures != 0 || info.RestartCount != 0 {
+		t.Fatalf("stable durable progress did not clear restart state: %+v", info)
+	}
+}
+
 func TestRestartTrackerCrashLoopWindowPersistsAcrossReload(t *testing.T) {
 	clock := &restartTrackerTestClock{now: time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)}
 	root := t.TempDir()
