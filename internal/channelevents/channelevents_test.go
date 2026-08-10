@@ -113,3 +113,65 @@ func TestEmitToTown_CreatesDirectory(t *testing.T) {
 		t.Errorf("channel dir should exist after emit: %v", err)
 	}
 }
+
+func TestEmitRigRoleToTown_IsolatesRigsAndRequiresMetadata(t *testing.T) {
+	t.Parallel()
+	townRoot := t.TempDir()
+
+	canaryPath, err := EmitRigRoleToTown(townRoot, RoleRefinery, "canary", "MERGE_READY", "witness", []string{
+		"rig=wrong",
+		"source=wrong",
+		"mr=cy-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenerPath, err := EmitRigRoleToTown(townRoot, RoleRefinery, "shortener", "MQ_SUBMIT", "sling", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(canaryPath) == filepath.Dir(shortenerPath) {
+		t.Fatal("different rigs must not share a channel directory")
+	}
+	if got, want := filepath.Base(filepath.Dir(canaryPath)), "refinery-canary"; got != want {
+		t.Fatalf("canary channel = %q, want %q", got, want)
+	}
+
+	data, err := os.ReadFile(canaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event struct {
+		Channel string            `json:"channel"`
+		Payload map[string]string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Channel != "refinery-canary" || event.Payload["rig"] != "canary" || event.Payload["source"] != "witness" {
+		t.Fatalf("unexpected rig event: %+v", event)
+	}
+	if _, err := EmitRigRoleToTown(townRoot, RoleWitness, "canary", "TEST", "", nil); err == nil {
+		t.Fatal("missing source must fail")
+	}
+}
+
+func TestValidateRigRolePayload(t *testing.T) {
+	t.Parallel()
+	valid := []string{"rig=canary", "source=witness"}
+	if err := ValidateRigRolePayload("refinery-canary", valid); err != nil {
+		t.Fatalf("valid payload rejected: %v", err)
+	}
+	for _, tc := range [][]string{
+		{"source=witness"},
+		{"rig=shortener", "source=witness"},
+		{"rig=canary"},
+	} {
+		if err := ValidateRigRolePayload("refinery-canary", tc); err == nil {
+			t.Fatalf("invalid payload accepted: %v", tc)
+		}
+	}
+	if err := ValidateRigRolePayload("legacy-channel", nil); err != nil {
+		t.Fatalf("unrelated channels must remain valid: %v", err)
+	}
+}

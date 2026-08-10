@@ -29,16 +29,16 @@ Creates a JSON file at ~/gt/events/<channel>/<timestamp>.event:
 
 EXAMPLES:
   # Emit a MERGE_READY event for the refinery
-  gt mol step emit-event --channel refinery --type MERGE_READY \
-    --payload polecat=nux --payload branch=polecat/nux/gt-iw7m
+  gt mol step emit-event --channel refinery-gastown --type MERGE_READY \
+    --payload rig=gastown --payload source=witness --payload polecat=nux
 
   # Emit a PATROL_WAKE event
-  gt mol step emit-event --channel refinery --type PATROL_WAKE \
-    --payload source=witness --payload queue_depth=3
+  gt mol step emit-event --channel refinery-gastown --type PATROL_WAKE \
+    --payload rig=gastown --payload source=witness --payload queue_depth=3
 
   # Emit an MQ_SUBMIT event
-  gt mol step emit-event --channel refinery --type MQ_SUBMIT \
-    --payload branch=feat/new-feature --payload mr_id=bd-42`,
+  gt mol step emit-event --channel refinery-gastown --type MQ_SUBMIT \
+    --payload rig=gastown --payload source=sling --payload mr_id=bd-42`,
 	RunE: runMoleculeEmitEvent,
 }
 
@@ -51,7 +51,7 @@ type EmitEventResult struct {
 
 func init() {
 	moleculeEmitEventCmd.Flags().StringVar(&emitEventChannel, "channel", "",
-		"Event channel name (required, e.g., 'refinery')")
+		"Event channel name (required, e.g., 'refinery-gastown')")
 	moleculeEmitEventCmd.Flags().StringVar(&emitEventType, "type", "",
 		"Event type (required, e.g., 'MERGE_READY')")
 	moleculeEmitEventCmd.Flags().StringArrayVar(&emitEventPayload, "payload", nil,
@@ -65,6 +65,9 @@ func init() {
 }
 
 func runMoleculeEmitEvent(cmd *cobra.Command, args []string) error {
+	if err := channelevents.ValidateRigRolePayload(emitEventChannel, emitEventPayload); err != nil {
+		return err
+	}
 	path, err := channelevents.Emit(emitEventChannel, emitEventType, emitEventPayload)
 	if err != nil {
 		return err

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/steveyegge/gastown/internal/channelevents"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
@@ -160,7 +161,7 @@ func TestEnsureRefineryRunningSafetyStoppedDoesNotSpawn(t *testing.T) {
 	townRoot := t.TempDir()
 	writeDaemonTownFile(t, townRoot, "mayor/town.json", `{"name":"test"}`)
 	writeDaemonTownFile(t, townRoot, ".beads/metadata.json", `{"prefix":"hq"}`)
-	writeDaemonTownFile(t, townRoot, "events/refinery/pending.event", "{}")
+	writeDaemonTownFile(t, townRoot, "events/refinery-testrig/pending.event", "{}")
 	if err := os.MkdirAll(filepath.Join(townRoot, "testrig"), 0o755); err != nil {
 		t.Fatalf("mkdir rig: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestEnsureRefineryRunningForkRigDoesNotSpawn(t *testing.T) {
 		t.Skip("mock tmux script uses POSIX shell")
 	}
 	townRoot := t.TempDir()
-	writeDaemonTownFile(t, townRoot, "events/refinery/pending.event", "{}")
+	writeDaemonTownFile(t, townRoot, "events/refinery-testrig/pending.event", "{}")
 	writeDaemonTownFile(t, townRoot, "testrig/config.json", `{"upstream_url":"https://github.com/upstream/repo","beads":{"prefix":"gt"}}`)
 
 	binDir := t.TempDir()
@@ -879,6 +880,27 @@ func TestHasPendingEvents_IgnoresNonEventFiles(t *testing.T) {
 
 	if d.hasPendingEvents("refinery") {
 		t.Error("expected false when only non-.event files exist")
+	}
+}
+
+func TestHasPendingEvents_RigIsolationAndLegacyIgnored(t *testing.T) {
+	townRoot := t.TempDir()
+	d := &Daemon{config: &Config{TownRoot: townRoot}}
+
+	if _, err := channelevents.EmitToTown(townRoot, "refinery", "LEGACY", nil); err != nil {
+		t.Fatal(err)
+	}
+	if d.hasPendingEvents("refinery-canary") || d.hasPendingEvents("refinery-shortener") {
+		t.Fatal("a legacy shared event must not appear in a rig-scoped channel")
+	}
+	if _, err := channelevents.EmitRigRoleToTown(townRoot, channelevents.RoleRefinery, "canary", "MQ_SUBMIT", "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !d.hasPendingEvents("refinery-canary") {
+		t.Fatal("canary event should be pending for canary")
+	}
+	if d.hasPendingEvents("refinery-shortener") {
+		t.Fatal("canary event must not be pending for shortener")
 	}
 }
 

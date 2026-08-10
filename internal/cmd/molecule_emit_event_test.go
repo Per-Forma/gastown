@@ -195,3 +195,16 @@ func TestEmitEventResult(t *testing.T) {
 		t.Errorf("type = %q, want %q", decoded.Type, result.Type)
 	}
 }
+
+func TestRunMoleculeEmitEventRequiresRigMetadata(t *testing.T) {
+	oldChannel, oldType, oldPayload := emitEventChannel, emitEventType, emitEventPayload
+	t.Cleanup(func() {
+		emitEventChannel, emitEventType, emitEventPayload = oldChannel, oldType, oldPayload
+	})
+	emitEventChannel = "witness-canary"
+	emitEventType = "WORK_DISPATCHED"
+	emitEventPayload = []string{"source=sling"}
+	if err := runMoleculeEmitEvent(nil, nil); err == nil {
+		t.Fatal("missing rig payload must fail before an event is emitted")
+	}
+}

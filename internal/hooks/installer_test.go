@@ -246,13 +246,19 @@ func TestOpenCodeTemplateFailureDiagnostics(t *testing.T) {
 		"timeout:",
 		"stdout_tail:",
 		"stderr_tail:",
-		"timeout 10s ${gtCommand()} dolt status 2>&1",
+		"runBoundedDoltStatus",
+		"Bun.spawn(args, options)",
+		"status_timed_out:",
+		"proc.kill(9)",
 		"dolt_status_tail:",
 		"suggested_recovery:",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("opencode template missing diagnostic field %q", want)
 		}
+	}
+	if strings.Contains(content, "timeout 10s") {
+		t.Fatal("opencode template must not depend on GNU timeout")
 	}
 }
 

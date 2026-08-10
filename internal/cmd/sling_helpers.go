@@ -907,6 +907,9 @@ func wakeRigAgents(rigName string) {
 	// processing deacon mail. Warn if not running (gt-9wv0).
 	townRoot, _ := workspace.FindFromCwd()
 	if townRoot != "" {
+		_, _ = channelevents.EmitRigRoleToTown(
+			townRoot, channelevents.RoleWitness, rigName, "WORK_DISPATCHED", "sling", nil,
+		)
 		if running, _, _ := daemon.IsRunning(townRoot); !running {
 			fmt.Fprintf(os.Stderr, "Warning: daemon is not running. Polecat may not auto-start.\n")
 			fmt.Fprintf(os.Stderr, "  Start with: gt daemon start\n")
@@ -944,8 +947,7 @@ func nudgeWitness(rigName, message string) {
 	// Emit a file event so the witness's await-event unblocks instantly.
 	townRoot, _ := workspace.FindFromCwd()
 	if townRoot != "" {
-		_, _ = channelevents.EmitToTown(townRoot, "witness", "POLECAT_DONE", []string{
-			"source=polecat",
+		_, _ = channelevents.EmitRigRoleToTown(townRoot, channelevents.RoleWitness, rigName, "POLECAT_DONE", "polecat", []string{
 			"message=" + message,
 		})
 	}
@@ -979,8 +981,7 @@ func nudgeRefinery(rigName, message string) {
 	// This is the programmatic bridge between mq submit and the event system.
 	townRoot, _ := workspace.FindFromCwd()
 	if townRoot != "" {
-		_, _ = channelevents.EmitToTown(townRoot, "refinery", "MQ_SUBMIT", []string{
-			"source=sling",
+		_, _ = channelevents.EmitRigRoleToTown(townRoot, channelevents.RoleRefinery, rigName, "MQ_SUBMIT", "sling", []string{
 			"message=" + message,
 		})
 	}

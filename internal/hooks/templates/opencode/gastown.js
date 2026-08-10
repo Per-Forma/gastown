@@ -1,5 +1,38 @@
 // Gas Town OpenCode plugin: hooks SessionStart/Compaction via events.
 // Injects gt prime context into the system prompt via experimental.chat.system.transform.
+export const runBoundedDoltStatus = async ({ spawn, gtBin, directory, timeoutMs = 10_000 }) => {
+  try {
+    const proc = spawn([gtBin, "dolt", "status"], {
+      cwd: directory,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdoutPromise = new Response(proc.stdout).text();
+    const stderrPromise = new Response(proc.stderr).text();
+    let timer;
+    const timeoutToken = Symbol("dolt-status-timeout");
+    const outcome = await Promise.race([
+      proc.exited,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(timeoutToken), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    const timedOut = outcome === timeoutToken;
+    if (timedOut) proc.kill(9);
+    const code = timedOut ? await proc.exited : outcome;
+    return {
+      code,
+      timedOut,
+      stdout: await stdoutPromise,
+      stderr: await stderrPromise,
+      error: null,
+    };
+  } catch (error) {
+    return { code: null, timedOut: false, stdout: "", stderr: "", error };
+  }
+};
+
 export const GasTown = async ({ $, directory }) => {
   const role = (process.env.GT_ROLE || "").toLowerCase();
   const gtBin = process.env.GT_BIN || "gt";
@@ -45,17 +78,21 @@ export const GasTown = async ({ $, directory }) => {
     !/(^|\s)(?:'[^']*\/|[^'\s]*\/)?gt'?\s+dolt\s+status(\s|$)/.test(cmd);
 
   const captureDoltStatus = async () => {
-    const statusCmd = `timeout 10s ${gtCommand()} dolt status 2>&1`;
-    try {
-      return await $`/bin/sh -lc ${statusCmd}`.cwd(directory).text();
-    } catch (err) {
-      return [
-        `status_command: ${statusCmd}`,
-        `status_error: ${err?.message || err}`,
-        `status_stdout_tail: ${outputTail(err?.stdout)}`,
-        `status_stderr_tail: ${outputTail(err?.stderr)}`,
-      ].join("\n");
-    }
+    const statusCmd = `${shellQuote(gtBin)} dolt status`;
+    const result = await runBoundedDoltStatus({
+      spawn: (args, options) => Bun.spawn(args, options),
+      gtBin,
+      directory,
+    });
+    const lines = [
+      `status_command: ${statusCmd}`,
+      `status_exit_code: ${result.code ?? exitCode(result.error) ?? "unknown"}`,
+      `status_timed_out: ${result.timedOut ? "yes" : "no"}`,
+    ];
+    if (result.error) lines.push(`status_error: ${result.error?.message || result.error}`);
+    lines.push(`status_stdout_tail: ${outputTail(result.stdout)}`);
+    lines.push(`status_stderr_tail: ${outputTail(result.stderr)}`);
+    return lines.join("\n");
   };
 
   const logFailure = async (cmd, err) => {

@@ -6,7 +6,7 @@ import (
 )
 
 // TestPatrolFormulasHaveBackoffLogic verifies that patrol formulas include
-// await-signal backoff logic in their loop-or-exit steps.
+// event/signal backoff logic in their loop-or-exit steps.
 //
 // This is a regression test for a bug where the witness patrol formula's
 // await-signal logic was accidentally removed by subsequent commits,
@@ -25,7 +25,7 @@ func TestPatrolFormulasHaveBackoffLogic(t *testing.T) {
 	}
 
 	patrolFormulas := []patrolFormula{
-		{"mol-witness-patrol.formula.toml", "loop-or-exit", "await-signal"},
+		{"mol-witness-patrol.formula.toml", "loop-or-exit", "await-event"},
 		{"mol-deacon-patrol.formula.toml", "loop-or-exit", "await-signal"},
 		{"mol-refinery-patrol.formula.toml", "burn-or-loop", "await-event"},
 	}
@@ -49,7 +49,7 @@ func TestPatrolFormulasHaveBackoffLogic(t *testing.T) {
 			}
 
 			// Verify the formula contains the required backoff patterns.
-			// Witness/deacon use await-signal; refinery uses await-event
+			// Witness/refinery use rig-scoped await-event; deacon uses await-signal.
 			// (file-based event channel system). Both provide backoff logic.
 			requiredPatterns := []string{
 				pf.awaitCmd,
@@ -67,6 +67,66 @@ func TestPatrolFormulasHaveBackoffLogic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRigPatrolFormulasUseIsolatedQuietChannels(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		loopID  string
+		channel string
+	}{
+		{"mol-witness-patrol.formula.toml", "loop-or-exit", "witness-{{rig}}"},
+		{"mol-refinery-patrol.formula.toml", "burn-or-loop", "refinery-{{rig}}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content, err := formulasFS.ReadFile("formulas/" + tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			formula, err := Parse(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var loop string
+			for _, step := range formula.Steps {
+				if step.ID == tc.loopID {
+					loop = step.Description
+					break
+				}
+			}
+			for _, want := range []string{
+				"--channel " + tc.channel,
+				"--backoff-base 5m",
+				"--backoff-mult 2",
+				"--backoff-max 30m",
+				"--cleanup",
+				"EFFORT: reduced",
+				"EFFORT: full",
+			} {
+				if !strings.Contains(loop, want) {
+					t.Errorf("%s loop missing %q", tc.name, want)
+				}
+			}
+			if strings.Contains(loop, "--context-check-interval") {
+				t.Errorf("%s must not use a short context-yield timer", tc.name)
+			}
+		})
+	}
+
+	witness, err := formulasFS.ReadFile("formulas/mol-witness-patrol.formula.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnessText := string(witness)
+	if strings.Contains(witnessText, "gt mol step await-signal") {
+		t.Fatal("Witness must not subscribe to the Town-wide activity feed")
+	}
+	if !strings.Contains(witnessText, "gt patrol controls --rig {{rig}} --json") {
+		t.Fatal("Witness must use the canonical control-plane command")
+	}
+	if strings.Contains(witnessText, "gt session status <rig>/refinery") {
+		t.Fatal("Witness must not infer or manually inspect the Refinery session")
 	}
 }
 
