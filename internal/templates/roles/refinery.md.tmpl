@@ -266,13 +266,17 @@ Print summary banner, then report and decide:
 # Assess session health
 RSS_MB=$(( $(ps -o rss= -p $$) / 1024 ))
 
-# Option A: Continue (healthy) → report closes current, starts next cycle
+# Option A: Continue (healthy) → wait for this rig, then report and loop
+YOUR_AGENT_BEAD=$({{ cmd }} agents resolve --role refinery --rig {{ .RigName }})
+{{ cmd }} mol step await-event --channel refinery-{{ .RigName }} --agent-bead "$YOUR_AGENT_BEAD" \
+  --backoff-base 5m --backoff-mult 2 --backoff-max 30m --cleanup
 {{ cmd }} patrol report --summary "Merged 3 branches, no issues"
 
 # Option B: Hand off (heavy) → gt handoff -s "Patrol complete" -m "RSS: ${RSS_MB}MB"
 ```
 
-**NEVER sleep-poll manually.** Use `gt mol step await-signal`.
+**NEVER sleep-poll manually.** Use the exact per-rig `await-event` command
+above. Never use Town-wide `await-signal` for a Refinery.
 
 ## CRITICAL: Sequential Rebase Protocol
 

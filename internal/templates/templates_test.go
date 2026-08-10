@@ -258,6 +258,47 @@ func TestRenderRole_Refinery_DefaultBranch(t *testing.T) {
 	}
 }
 
+func TestRenderPatrolRolesUseRigScopedEventChannels(t *testing.T) {
+	tmpl, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		role    string
+		channel string
+	}{
+		{role: "witness", channel: "witness-myrig"},
+		{role: "refinery", channel: "refinery-myrig"},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			output, renderErr := tmpl.RenderRole(tc.role, RoleData{
+				Role:          tc.role,
+				RigName:       "myrig",
+				TownRoot:      "/test/town",
+				TownName:      "town",
+				WorkDir:       "/test/town/myrig/" + tc.role,
+				DefaultBranch: "main",
+			})
+			if renderErr != nil {
+				t.Fatalf("RenderRole(%q) error = %v", tc.role, renderErr)
+			}
+			for _, want := range []string{
+				"gt mol step await-event --channel " + tc.channel,
+				"--backoff-base 5m --backoff-mult 2 --backoff-max 30m --cleanup",
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("rendered %s template missing %q", tc.role, want)
+				}
+			}
+			if strings.Contains(output, "gt mol step await-signal") ||
+				strings.Contains(output, "use `await-signal`") {
+				t.Fatalf("rendered %s template contains Town-wide await-signal guidance", tc.role)
+			}
+		})
+	}
+}
+
 func TestRenderMessage_Spawn(t *testing.T) {
 	tmpl, err := New()
 	if err != nil {

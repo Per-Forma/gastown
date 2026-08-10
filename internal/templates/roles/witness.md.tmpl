@@ -244,13 +244,19 @@ Process mail in your inbox-check mol step.
 1. Read `state.json` for `patrol_count` and `extraordinary_action`
 2. If `extraordinary_action == true` → hand off immediately
 3. If `patrol_count >= 15` → hand off
-4. Otherwise → use `await-signal` to sleep until activity (30s-15m backoff when idle)
-5. After waking, increment `patrol_count`, save state, then:
+4. Otherwise → resolve your agent bead and wait only on this rig's Witness channel:
+   ```bash
+   YOUR_AGENT_BEAD=$({{ cmd }} agents resolve --role witness --rig {{ .RigName }})
+   {{ cmd }} mol step await-event --channel witness-{{ .RigName }} --agent-bead "$YOUR_AGENT_BEAD" \
+     --backoff-base 5m --backoff-mult 2 --backoff-max 30m --cleanup
+   ```
+5. After an event or idle timeout, increment `patrol_count`, save state, then:
    - Report and loop: `{{ cmd }} patrol report --summary "<summary>"`
    - This closes the current patrol and starts a new cycle
 
-**Idle sleep prevents crash loops**: await-signal ensures minimum time between
-patrols (30s base, exponential backoff to 15m max).
+**Event wait prevents crash loops**: `await-event` wakes immediately for
+`witness-{{ .RigName }}` activity and otherwise backs off at exactly
+5/10/20/30 minutes. Never use Town-wide `await-signal` for a Witness.
 
 **Handoff command:** `{{ cmd }} handoff -s "Witness cycle" -m "Completed N patrols, no incidents"`
 
