@@ -584,6 +584,25 @@ func DiscoverTargets(townRoot string) ([]Target, error) {
 		})
 	}
 
+	// Reusable dogs are town-level agents with one home per dog. Keep their
+	// hook settings current just like Mayor, Deacon, and Boot. A dog may remain
+	// stopped for a long time, so relying on session startup to refresh these
+	// files leaves stale hooks in place when it is eventually resumed.
+	dogsDir := filepath.Join(townRoot, "deacon", "dogs")
+	if entries, err := os.ReadDir(dogsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "boot" || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			dogDir := filepath.Join(dogsDir, entry.Name())
+			targets = append(targets, Target{
+				Path: filepath.Join(dogDir, ".claude", "settings.json"),
+				Key:  "dog/" + entry.Name(),
+				Role: "dog",
+			})
+		}
+	}
+
 	// Scan rigs
 	entries, err := os.ReadDir(townRoot)
 	if err != nil {
@@ -675,6 +694,22 @@ func DiscoverRoleLocations(townRoot string) ([]RoleLocation, error) {
 		dir := filepath.Join(townRoot, role)
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			locations = append(locations, RoleLocation{Dir: dir, Role: role})
+		}
+	}
+
+	// Dogs are individual town-level role homes rather than rig roles. Discover
+	// each reusable dog separately so template-based hooks (OpenCode, Gemini,
+	// etc.) are installed in the directory where that dog actually starts.
+	dogsDir := filepath.Join(townRoot, "deacon", "dogs")
+	if entries, err := os.ReadDir(dogsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "boot" || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			locations = append(locations, RoleLocation{
+				Dir:  filepath.Join(dogsDir, entry.Name()),
+				Role: "dog",
+			})
 		}
 	}
 

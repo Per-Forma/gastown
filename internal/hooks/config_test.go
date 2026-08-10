@@ -1046,11 +1046,46 @@ func TestDiscoverTargets_BootAbsent(t *testing.T) {
 	}
 }
 
+func TestDiscoverTargets_DogsIncludedIndividually(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	os.MkdirAll(filepath.Join(tmpDir, "mayor"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "deacon", "dogs", "alpha"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "deacon", "dogs", "bravo"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "deacon", "dogs", "boot"), 0755)
+
+	targets, err := DiscoverTargets(tmpDir)
+	if err != nil {
+		t.Fatalf("DiscoverTargets failed: %v", err)
+	}
+
+	found := make(map[string]Target)
+	for _, target := range targets {
+		found[target.Key] = target
+	}
+	for _, name := range []string{"alpha", "bravo"} {
+		key := "dog/" + name
+		target, ok := found[key]
+		if !ok {
+			t.Fatalf("expected target %q", key)
+		}
+		wantPath := filepath.Join(tmpDir, "deacon", "dogs", name, ".claude", "settings.json")
+		if target.Path != wantPath || target.Role != "dog" {
+			t.Fatalf("target %q = %+v, want path %q role dog", key, target, wantPath)
+		}
+	}
+	if _, ok := found["dog/boot"]; ok {
+		t.Fatal("boot must not also be discovered as a reusable dog")
+	}
+}
+
 func TestDiscoverRoleLocations(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmpDir, "mayor"), 0755)
 	os.MkdirAll(filepath.Join(tmpDir, "deacon"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "deacon", "dogs", "alpha"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, "deacon", "dogs", "boot"), 0755)
 	os.MkdirAll(filepath.Join(tmpDir, "rig1", "crew", "alice"), 0755)
 	os.MkdirAll(filepath.Join(tmpDir, "rig1", "polecats", "toast"), 0755)
 	os.MkdirAll(filepath.Join(tmpDir, "rig1", "witness"), 0755)
@@ -1059,6 +1094,22 @@ func TestDiscoverRoleLocations(t *testing.T) {
 	locations, err := DiscoverRoleLocations(tmpDir)
 	if err != nil {
 		t.Fatalf("DiscoverRoleLocations failed: %v", err)
+	}
+
+	foundDog := false
+	for _, loc := range locations {
+		if loc.Role == "dog" {
+			foundDog = true
+			if loc.Dir != filepath.Join(tmpDir, "deacon", "dogs", "alpha") || loc.Rig != "" {
+				t.Fatalf("unexpected dog location: %+v", loc)
+			}
+		}
+		if loc.Dir == filepath.Join(tmpDir, "deacon", "dogs", "boot") && loc.Role == "dog" {
+			t.Fatal("boot must not be discovered as a reusable dog role location")
+		}
+	}
+	if !foundDog {
+		t.Fatal("expected reusable dog role location")
 	}
 
 	// Build lookup by role+rig
@@ -1073,6 +1124,7 @@ func TestDiscoverRoleLocations(t *testing.T) {
 	}{
 		{"", "mayor"},
 		{"", "deacon"},
+		{"", "dog"},
 		{"rig1", "crew"},
 		{"rig1", "polecat"},
 		{"rig1", "witness"},
