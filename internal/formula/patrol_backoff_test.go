@@ -284,8 +284,8 @@ func TestPatrolFormulasUseDynamicBeadResolution(t *testing.T) {
 		"mol-refinery-patrol.formula.toml",
 	}
 	expectedResolver := map[string]string{
-		"mol-witness-patrol.formula.toml":  "YOUR_AGENT_BEAD=$(gt agents resolve --role witness --rig {{rig}})",
-		"mol-refinery-patrol.formula.toml": "YOUR_AGENT_BEAD=$(gt agents resolve --role refinery --rig {{rig}})",
+		"mol-witness-patrol.formula.toml":  "$(gt agents resolve --role witness --rig {{rig}})",
+		"mol-refinery-patrol.formula.toml": "$(gt agents resolve --role refinery --rig {{rig}})",
 	}
 
 	for _, name := range patrolFormulas {
@@ -321,11 +321,14 @@ func TestPatrolFormulasUseDynamicBeadResolution(t *testing.T) {
 					"See hq-9xs.",
 					name)
 			}
-			if !strings.Contains(loopDesc, `--agent-bead "$YOUR_AGENT_BEAD"`) {
+			if !strings.Contains(loopDesc, `--agent-bead "`+expectedResolver[name]+`"`) {
 				t.Errorf("%s loop step must pass the resolved agent bead to await", name)
 			}
-			if !strings.Contains(loopDesc, `gt agents state "$YOUR_AGENT_BEAD" --set idle=0`) {
+			if !strings.Contains(loopDesc, `gt agents state "`+expectedResolver[name]+`" --set idle=0`) {
 				t.Errorf("%s loop step must reset state on the resolved agent bead", name)
+			}
+			if strings.Contains(loopDesc, "$YOUR_AGENT_BEAD") {
+				t.Errorf("%s loop step carries agent bead state across separate shell calls", name)
 			}
 			if strings.Contains(loopDesc, "bd list --label=gt:agent") {
 				t.Errorf("%s loop step still uses legacy bd-list agent resolution", name)
