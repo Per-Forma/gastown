@@ -154,6 +154,148 @@ func TestAgentBeadsExistCheck_RespectsRigScope(t *testing.T) {
 	}
 }
 
+// TestAgentBeadsExistCheck_TownDuplicateDoesNotSatisfyRigLocal verifies that
+// an identity with the right ID in the town store does not mask its absence
+// from the rig store. Patrol backoff state is written directly to the rig DB.
+func TestAgentBeadsExistCheck_TownDuplicateDoesNotSatisfyRigLocal(t *testing.T) {
+	tmpDir := t.TempDir()
+	townBeadsDir := filepath.Join(tmpDir, ".beads")
+	rigBeadsDir := filepath.Join(tmpDir, "gastown", "mayor", "rig", ".beads")
+	for _, dir := range []string{townBeadsDir, rigBeadsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townBeadsDir, "routes.jsonl"),
+		[]byte(`{"prefix":"gs-","path":"gastown/mayor/rig"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+args=()
+for arg in "$@"; do
+  [[ "$arg" == --allow-stale ]] && continue
+  args+=("$arg")
+done
+cmd=""
+for arg in "${args[@]}"; do
+  [[ "$arg" == -* ]] && continue
+  cmd="$arg"
+  break
+done
+case "$cmd" in
+  list)
+    if [[ "${BEADS_DIR:-}" == "` + townBeadsDir + `" ]]; then
+      printf '[{"id":"gs-gastown-witness","status":"open","labels":["gt:agent"]}]\n'
+    else
+      printf '[]\n'
+    fi
+    ;;
+  mol) printf '{"wisps":[]}\n' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fmt.Sprintf("%s%c%s", binDir, os.PathListSeparator, os.Getenv("PATH")))
+
+	result := NewAgentBeadsCheck().Run(&CheckContext{TownRoot: tmpDir})
+	if !containsString(result.Details, "gs-gastown-witness") {
+		t.Fatalf("town duplicate masked missing rig-local witness; details: %v", result.Details)
+	}
+}
+
+// TestAgentBeadsExistCheck_FixCreatesRigLocalDuplicate verifies that Doctor
+// pins a repair to the rig store even when the identity already exists in Town.
+func TestAgentBeadsExistCheck_FixCreatesRigLocalDuplicate(t *testing.T) {
+	tmpDir := t.TempDir()
+	townBeadsDir := filepath.Join(tmpDir, ".beads")
+	rigBeadsDir := filepath.Join(tmpDir, "gastown", "mayor", "rig", ".beads")
+	for _, dir := range []string{townBeadsDir, rigBeadsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townBeadsDir, "routes.jsonl"),
+		[]byte(`{"prefix":"gs-","path":"gastown/mayor/rig"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logFile := filepath.Join(tmpDir, "bd.log")
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+args=()
+for arg in "$@"; do
+  [[ "$arg" == --allow-stale ]] && continue
+  args+=("$arg")
+done
+cmd=""
+idx=0
+for i in "${!args[@]}"; do
+  [[ "${args[$i]}" == -* ]] && continue
+  cmd="${args[$i]}"
+  idx=$i
+  break
+done
+rest=("${args[@]:$((idx + 1))}")
+case "$cmd" in
+  list)
+    if [[ "${BEADS_DIR:-}" == "` + townBeadsDir + `" ]]; then
+      printf '[{"id":"gs-gastown-witness","status":"open","labels":["gt:agent"]}]\n'
+    else
+      printf '[]\n'
+    fi
+    ;;
+  mol) printf '{"wisps":[]}\n' ;;
+  show) exit 1 ;;
+  create)
+    id=""
+    for arg in "${rest[@]}"; do
+      [[ "$arg" == --id=* ]] && id="${arg#--id=}"
+    done
+    printf '%s|%s\n' "${BEADS_DIR:-}" "$id" >> "` + logFile + `"
+    printf '{"id":"%s","status":"open","labels":["gt:agent"]}\n' "$id"
+    ;;
+  *) exit 0 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fmt.Sprintf("%s%c%s", binDir, os.PathListSeparator, os.Getenv("PATH")))
+
+	if err := NewAgentBeadsCheck().Fix(&CheckContext{TownRoot: tmpDir}); err != nil {
+		t.Fatalf("Fix() returned error: %v", err)
+	}
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := rigBeadsDir + "|gs-gastown-witness"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("expected rig-local witness create %q, got:\n%s", want, data)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestAgentBeadsExistCheck_FixRespectsRigScope verifies that --fix with a rig
 // scope does not create agent beads for unrelated rig prefixes.
 func TestAgentBeadsExistCheck_FixRespectsRigScope(t *testing.T) {
