@@ -1,6 +1,6 @@
 description = "Per-rig worker monitor patrol loop.\n\nThe Witness is the Pit Boss for your rig. You watch polecats, nudge them toward\ncompletion, verify clean git state before kills, and escalate stuck workers.\n\n**You do NOT do implementation work.** Your job is oversight, not coding.\n\n## Persistent Polecat Model (gt-4ac)\n\nPolecats persist after work completion — sandbox is preserved for reuse:\n\n```\nPolecat lifecycle: spawning → working → mr_submitted → idle (sandbox preserved)\nMR lifecycle:      created → queued → processed → merged (Refinery handles)\n```\n\nOnce a polecat calls gt done and submits an MR, it transitions to idle state.\nThe MR lifecycle continues independently in the Refinery. The polecat is NOT\nnuked — its sandbox is preserved for reuse by future slings.\n\n**CRITICAL**: Do NOT nuke polecats with pending MRs. The refinery needs the\nremote branch to exist to process the merge. Nuking deletes the remote branch\nand orphans the MR. See gt-6a9d.\n\n**Key principle**: Polecat lifecycle is separate from MR lifecycle. Polecats\ngo idle after work, they are NOT destroyed.\n\n## Restart-First Policy (gt-dsgp)\n\nThe witness NEVER nukes polecats automatically. When a polecat is stuck, hung,\nor has a dead agent process, the witness RESTARTS the session instead of nuking.\nThis preserves the polecat's worktree and branch, preventing work loss.\n\n- Dead agent process → restart session\n- Hung session (no output 30+ min) → restart session\n- Stuck in gt done → restart session\n- Done polecat (bead closed) → leave alone (sandbox preserved)\n- Polecat with pending MR → leave alone (refinery handles)\n\nNuking only happens via explicit `gt polecat nuke` command from a human or Mayor.\n\n## Design Philosophy\n\nThis patrol follows Gas Town principles:\n- **Discovery over tracking**: Observe reality each cycle, with minimal agent-bead state for duration tracking\n- **Beads over mail**: survey-workers discovers completion state from agent bead metadata (gt-w0br); inbox-check POLECAT_DONE is fallback only\n- **Persistent by default**: Clean polecats go idle, sandbox preserved for reuse (gt-4ac)\n- **Cleanup wisps for merge tracking**: Created when MR is pending in refinery\n- **Task tool for parallelism**: Subagents inspect polecats, not molecule arms\n- **Swim lane discipline**: Only close wisps YOU created. Wisp lifecycle for non-witness wisps is the reaper Dog's job. Report orphaned foreign wisps — never close them.\n\n## Patrol Shape (Linear)\n\n```\ninbox-check ─► process-cleanups ─► check-refinery ─► survey-workers\n                                                            │\n         ┌──────────────────────────────────────────────────┘\n         ▼\n  check-timer-gates ─► check-swarm ─► patrol-cleanup ─► context-check ─► loop-or-exit\n```\n\nNo dynamic arms. No fanout gates. No persistent nudge counters.\nState is discovered each cycle from reality (tmux, beads, mail).\n\n## Abbreviated Patrol Mode (Idle Effort Tuning)\n\nWhen `await-event` outputs `EFFORT: reduced`, run an ABBREVIATED patrol.\nThis happens on every channel timeout; idle_cycles controls only the next wait duration.\n\nAbbreviated patrol rules:\n- **inbox-check**: Run `gt mail drain` only. Skip individual message processing unless drain reports new HELP messages.\n- **process-cleanups**: Skip entirely (say \"Abbreviated: skipping cleanups\").\n- **check-refinery**: Run `gt patrol controls --rig {{rig}} --json` only. Skip queue analysis.\n- **survey-workers**: Run `gt patrol scan --notify` only. Skip orphaned bead detection.\n- **check-timer-gates**: Skip entirely.\n- **check-swarm-completion**: Skip entirely.\n- **patrol-cleanup**: Skip entirely.\n- **context-check**: Quick self-assessment only (one sentence).\n- **loop-or-exit**: Normal (await-event as usual).\n\nWhen `await-event` outputs `EFFORT: full`, run all steps thoroughly (normal mode).\n\nThe goal: idle cycles should burn ~10% of the tokens a full patrol uses."
 formula = 'mol-witness-patrol'
-version = 16
+version = 17
 
 [vars]
 [vars.wisp_type]
@@ -72,16 +72,16 @@ End of patrol cycle decision.
 
 **If context LOW** (can continue patrolling):
 
-Resolve your agent bead ID for this patrol cycle. Verify your agent bead exists before subscribing:
-```bash
-YOUR_AGENT_BEAD=$(gt agents resolve --role witness --rig {{rig}})
-```
-This must resolve exactly one bead ID. If it fails, STOP and report the error. If it reports multiple results, STOP and report the ambiguity — manual disambiguation is required.
+Resolve the agent bead inline when subscribing. The shell used by one tool call
+does not retain variables for a later tool call, so do not split resolution and
+subscription into separate commands. Resolution must return exactly one bead ID;
+otherwise STOP and report the error or ambiguity.
 
 Then subscribe to this rig's dedicated Witness event channel:
 
 ```bash
-gt mol step await-event --channel witness-{{rig}} --agent-bead "$YOUR_AGENT_BEAD" \
+gt mol step await-event --channel witness-{{rig}} \
+  --agent-bead "$(gt agents resolve --role witness --rig {{rig}})" \
   --backoff-base 5m --backoff-mult 2 --backoff-max 30m --cleanup
 ```
 
@@ -100,7 +100,7 @@ This command:
 **On event received** (rig activity detected):
 Reset the idle counter and start next patrol cycle:
 ```bash
-gt agents state "$YOUR_AGENT_BEAD" --set idle=0
+gt agents state "$(gt agents resolve --role witness --rig {{rig}})" --set idle=0
 ```
 
 **On timeout** (no activity):

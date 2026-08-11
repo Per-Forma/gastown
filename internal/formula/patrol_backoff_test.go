@@ -72,12 +72,13 @@ func TestPatrolFormulasHaveBackoffLogic(t *testing.T) {
 
 func TestRigPatrolFormulasUseIsolatedQuietChannels(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		loopID  string
-		channel string
+		name          string
+		loopID        string
+		channel       string
+		agentResolver string
 	}{
-		{"mol-witness-patrol.formula.toml", "loop-or-exit", "witness-{{rig}}"},
-		{"mol-refinery-patrol.formula.toml", "burn-or-loop", "refinery-{{rig}}"},
+		{"mol-witness-patrol.formula.toml", "loop-or-exit", "witness-{{rig}}", "$(gt agents resolve --role witness --rig {{rig}})"},
+		{"mol-refinery-patrol.formula.toml", "burn-or-loop", "refinery-{{rig}}", "$(gt agents resolve --role refinery --rig {{rig}})"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content, err := formulasFS.ReadFile("formulas/" + tc.name)
@@ -97,6 +98,7 @@ func TestRigPatrolFormulasUseIsolatedQuietChannels(t *testing.T) {
 			}
 			for _, want := range []string{
 				"--channel " + tc.channel,
+				"--agent-bead \"" + tc.agentResolver + "\"",
 				"--backoff-base 5m",
 				"--backoff-mult 2",
 				"--backoff-max 30m",
@@ -110,6 +112,9 @@ func TestRigPatrolFormulasUseIsolatedQuietChannels(t *testing.T) {
 			}
 			if strings.Contains(loop, "--context-check-interval") {
 				t.Errorf("%s must not use a short context-yield timer", tc.name)
+			}
+			if strings.Contains(loop, "$YOUR_AGENT_BEAD") {
+				t.Errorf("%s must resolve the agent bead in the same shell command that uses it", tc.name)
 			}
 		})
 	}

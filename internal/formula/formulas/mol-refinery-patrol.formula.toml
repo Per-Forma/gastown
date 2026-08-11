@@ -108,7 +108,7 @@ When `await-event` outputs `EFFORT: full`, run all steps thoroughly (normal mode
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-refinery-patrol"
-version = 18
+version = 19
 
 [vars]
 [vars.wisp_type]
@@ -1182,16 +1182,16 @@ End of patrol cycle decision. Use the signals from context-check to decide.
 
 **If you decide to continue patrolling:**
 
-Resolve your agent bead ID for this patrol cycle:
-```bash
-YOUR_AGENT_BEAD=$(gt agents resolve --role refinery --rig {{rig}})
-```
-This must resolve exactly one bead ID. If it fails, STOP and report the error. If it reports multiple results, STOP and report the ambiguity — manual disambiguation is required. Use the resolved `YOUR_AGENT_BEAD` in the commands below.
+Resolve the agent bead inline when subscribing. The shell used by one tool call
+does not retain variables for a later tool call, so do not split resolution and
+subscription into separate commands. Resolution must return exactly one bead ID;
+otherwise STOP and report the error or ambiguity.
 
 Then subscribe to this rig's dedicated Refinery event channel:
 
 ```bash
-gt mol step await-event --channel refinery-{{rig}} --agent-bead "$YOUR_AGENT_BEAD" \
+gt mol step await-event --channel refinery-{{rig}} \
+  --agent-bead "$(gt agents resolve --role refinery --rig {{rig}})" \
   --backoff-base 5m --backoff-mult 2 --backoff-max 30m --cleanup
 ```
 
@@ -1215,7 +1215,7 @@ This command:
 **On event received** (refinery-specific activity):
 Reset the idle counter and start next patrol cycle:
 ```bash
-gt agents state "$YOUR_AGENT_BEAD" --set idle=0
+gt agents state "$(gt agents resolve --role refinery --rig {{rig}})" --set idle=0
 ```
 
 **On timeout** (no events):
