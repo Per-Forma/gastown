@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/channelevents"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -154,16 +155,31 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating event directory: %w", err)
 	}
 
+	// Canonical patrol channels always have a mechanically derivable local
+	// identity. Infer it when a model omits --agent-bead so idle backoff cannot
+	// silently collapse to a permanent five-minute loop.
+	agentBead := awaitEventAgentBead
+	agentBeadInferred := false
+	if agentBead == "" {
+		if inferred, ok := inferCanonicalPatrolAgentBead(townRoot, awaitEventChannel); ok {
+			agentBead = inferred
+			agentBeadInferred = true
+		}
+	}
+
 	// Read current idle cycles and backoff window from agent bead
 	var idleCycles int
 	var backoffUntil time.Time
 	var beadsDir string
-	if awaitEventAgentBead != "" {
+	if agentBead != "" {
 		var wdErr error
 		beadsDir, wdErr = resolveAgentTrackingBeadsDir()
 		if wdErr == nil {
-			labels, labErr := getAgentLabels(awaitEventAgentBead, beadsDir)
+			labels, labErr := getAgentLabels(agentBead, beadsDir)
 			if labErr != nil {
+				if agentBeadInferred {
+					return fmt.Errorf("reading inferred patrol agent bead %s: %w", agentBead, labErr)
+				}
 				if !awaitEventQuiet {
 					fmt.Printf("%s Could not read agent bead (starting at idle=0): %v\n",
 						style.Dim.Render("⚠"), labErr)
@@ -202,7 +218,7 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 	timeout := fullTimeout
 	resumed := false
 	now := time.Now()
-	if awaitEventAgentBead != "" && !backoffUntil.IsZero() && backoffUntil.After(now) {
+	if agentBead != "" && !backoffUntil.IsZero() && backoffUntil.After(now) {
 		remaining := backoffUntil.Sub(now)
 		if remaining <= fullTimeout {
 			timeout = remaining
@@ -217,8 +233,8 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 	// Persist backoff-until for crash recovery.
 	// When resuming an existing window, keep the original deadline stable across
 	// context-yield re-entry instead of rewriting it on every invocation.
-	if awaitEventAgentBead != "" && beadsDir != "" && !resumed {
-		_ = setAgentBackoffUntil(awaitEventAgentBead, beadsDir, now.Add(timeout))
+	if agentBead != "" && beadsDir != "" && !resumed {
+		_ = setAgentBackoffUntil(agentBead, beadsDir, now.Add(timeout))
 	}
 
 	if !awaitEventQuiet && !moleculeJSON {
@@ -239,14 +255,14 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 	result.Elapsed = time.Since(startTime)
 
 	// Update agent bead idle cycles and heartbeat
-	if awaitEventAgentBead != "" && beadsDir != "" {
+	if agentBead != "" && beadsDir != "" {
 		// Always update heartbeat (both event and timeout) so witness doesn't
 		// think we're dead during long idle periods.
-		_ = updateAgentHeartbeat(awaitEventAgentBead, beadsDir)
+		_ = updateAgentHeartbeat(agentBead, beadsDir)
 
 		if result.Reason == "timeout" {
 			newIdle := idleCycles + 1
-			if setErr := setAgentIdleCycles(awaitEventAgentBead, beadsDir, newIdle); setErr != nil {
+			if setErr := setAgentIdleCycles(agentBead, beadsDir, newIdle); setErr != nil {
 				if !awaitEventQuiet {
 					fmt.Printf("%s Failed to update idle count: %v\n",
 						style.Dim.Render("⚠"), setErr)
@@ -257,7 +273,7 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 		} else if result.Reason == "event" {
 			// Reset idle on event received
 			if idleCycles > 0 {
-				_ = setAgentIdleCycles(awaitEventAgentBead, beadsDir, 0)
+				_ = setAgentIdleCycles(agentBead, beadsDir, 0)
 			}
 			result.IdleCycles = 0
 		}
@@ -267,7 +283,7 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 		// Keep the backoff window across context-yield so the next invocation
 		// resumes the remaining wait instead of restarting the same idle tier.
 		if result.Reason == "event" || result.Reason == "timeout" {
-			_ = clearAgentBackoffUntil(awaitEventAgentBead, beadsDir)
+			_ = clearAgentBackoffUntil(agentBead, beadsDir)
 		}
 	}
 
@@ -323,6 +339,43 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// inferCanonicalPatrolAgentBead maps a registered per-rig patrol channel to
+// its local singleton identity. Non-patrol and unregistered channels remain
+// untracked so await-event retains its general-purpose behavior.
+func inferCanonicalPatrolAgentBead(townRoot, channel string) (string, bool) {
+	var role, rig string
+	switch {
+	case strings.HasPrefix(channel, "witness-"):
+		role = "witness"
+		rig = strings.TrimPrefix(channel, "witness-")
+	case strings.HasPrefix(channel, "refinery-"):
+		role = "refinery"
+		rig = strings.TrimPrefix(channel, "refinery-")
+	default:
+		return "", false
+	}
+	if rig == "" {
+		return "", false
+	}
+
+	routes, err := beads.LoadRoutes(filepath.Join(townRoot, ".beads"))
+	if err != nil {
+		return "", false
+	}
+	for _, route := range routes {
+		parts := strings.SplitN(route.Path, "/", 2)
+		if len(parts) == 0 || parts[0] != rig {
+			continue
+		}
+		prefix := strings.TrimSuffix(route.Prefix, "-")
+		if role == "witness" {
+			return beads.WitnessBeadIDWithPrefix(prefix, rig), true
+		}
+		return beads.RefineryBeadIDWithPrefix(prefix, rig), true
+	}
+	return "", false
 }
 
 // awaitEventEffortLevel maps wake reasons to the next patrol's effort.

@@ -676,6 +676,40 @@ func TestAwaitEventEffortLevel(t *testing.T) {
 	}
 }
 
+func TestInferCanonicalPatrolAgentBead(t *testing.T) {
+	townRoot := t.TempDir()
+	beadsDir := filepath.Join(townRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	routes := strings.Join([]string{
+		`{"prefix":"gt-","path":"gastown/mayor/rig"}`,
+		`{"prefix":"cy-","path":"canary"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routes), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		channel string
+		want    string
+		ok      bool
+	}{
+		{channel: "witness-gastown", want: "gt-gastown-witness", ok: true},
+		{channel: "refinery-canary", want: "cy-canary-refinery", ok: true},
+		{channel: "witness-unknown", ok: false},
+		{channel: "refinery-", ok: false},
+		{channel: "custom-gastown", ok: false},
+	} {
+		t.Run(tc.channel, func(t *testing.T) {
+			got, ok := inferCanonicalPatrolAgentBead(townRoot, tc.channel)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("inferCanonicalPatrolAgentBead(%q) = (%q, %v), want (%q, %v)", tc.channel, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 func TestEventFileStruct(t *testing.T) {
 	ef := EventFile{
 		Path:    "/home/gt/events/refinery/12345.event",
