@@ -1678,6 +1678,31 @@ func (d *Daemon) localModelWatchdogHealthy(now time.Time) bool {
 	return age >= 0 && age <= 2*time.Minute
 }
 
+// localModelCapabilityDeferred reports whether the independent LM Studio
+// watchdog has recently and explicitly classified inference as busy. A fresh
+// deferral is positive evidence that a slow Deacon response is waiting on
+// healthy model load, not evidence that the Deacon process is wedged.
+func (d *Daemon) localModelCapabilityDeferred(now time.Time) bool {
+	data, err := os.ReadFile(filepath.Join(d.config.TownRoot, "deacon", "lmstudio-watchdog.json"))
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Status                    string    `json:"status"`
+		CheckedAt                 time.Time `json:"checked_at"`
+		LastCapabilityProbeResult string    `json:"last_capability_probe_result"`
+	}
+	if json.Unmarshal(data, &state) != nil || state.CheckedAt.IsZero() ||
+		state.LastCapabilityProbeResult != "deferred" {
+		return false
+	}
+	if state.Status != "healthy" && state.Status != "capability-stale" {
+		return false
+	}
+	age := now.Sub(state.CheckedAt)
+	return age >= 0 && age <= 2*time.Minute
+}
+
 // deaconGracePeriod returns the config-driven deacon grace period.
 // The Deacon needs time to initialize Claude, run SessionStart hooks, execute gt prime,
 // run a patrol cycle, and write a fresh heartbeat. Default: 5 minutes.
@@ -1703,6 +1728,9 @@ func (d *Daemon) checkDeaconHeartbeat() {
 		return
 	}
 
+	now := time.Now()
+	capabilityDeferred := d.localModelCapabilityDeferred(now)
+
 	// Always read heartbeat first (PATCH-005)
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
 
@@ -1719,6 +1747,10 @@ func (d *Daemon) checkDeaconHeartbeat() {
 					timeSinceStart.Round(time.Second))
 				return
 			}
+			if capabilityDeferred {
+				d.logger.Printf("Deacon startup heartbeat deferred by active MLX inference load; preserving session %s", sessionName)
+				return
+			}
 			// Grace period expired without any heartbeat - Deacon failed to start
 			// Stuck-agent-dog: kill and restart
 			d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
@@ -1733,6 +1765,10 @@ func (d *Daemon) checkDeaconHeartbeat() {
 			if timeSinceStart < d.deaconGracePeriod() {
 				d.logger.Printf("Deacon started %s ago, heartbeat is pre-restart, awaiting fresh heartbeat...",
 					timeSinceStart.Round(time.Second))
+				return
+			}
+			if capabilityDeferred {
+				d.logger.Printf("Deacon post-start heartbeat deferred by active MLX inference load; preserving session %s", sessionName)
 				return
 			}
 			// Grace period expired but heartbeat still from before start
@@ -1784,6 +1820,10 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	// Session exists but heartbeat is stale. The stale band is intentionally
 	// silent; only the very-stale threshold authorizes a restart.
 	if age >= veryStaleThreshold {
+		if capabilityDeferred {
+			d.logger.Printf("Deacon heartbeat is very stale but MLX capability verification is deferred by active load; preserving session %s", sessionName)
+			return
+		}
 		// Stuck-agent-dog: kill and restart
 		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
 		d.restartStuckDeacon(sessionName, fmt.Sprintf("heartbeat stale for %s", age.Round(time.Minute)), false)
