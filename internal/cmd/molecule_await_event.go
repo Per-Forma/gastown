@@ -278,13 +278,7 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Set effort level based on idle cycles.
-	// context-yield forces full effort: context-check must not be abbreviated.
-	if result.Reason == "event" || result.Reason == "context-yield" || result.IdleCycles == 0 {
-		result.EffortLevel = "full"
-	} else {
-		result.EffortLevel = "abbreviated"
-	}
+	result.EffortLevel = awaitEventEffortLevel(result.Reason)
 
 	// Output
 	if moleculeJSON {
@@ -329,6 +323,17 @@ func runMoleculeAwaitEvent(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// awaitEventEffortLevel maps wake reasons to the next patrol's effort.
+// A timeout always means the channel was idle, even when agent-bead tracking
+// was unavailable or the caller omitted --agent-bead. Events and explicit
+// context yields require a full pass.
+func awaitEventEffortLevel(reason string) string {
+	if reason == "timeout" {
+		return "abbreviated"
+	}
+	return "full"
 }
 
 // calculateEventTimeout mirrors calculateEffectiveTimeout for await-event.

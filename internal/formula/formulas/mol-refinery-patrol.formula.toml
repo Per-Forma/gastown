@@ -91,7 +91,7 @@ unless you are explicitly told to skip to a step.
 ## Abbreviated Patrol Mode (Idle Effort Tuning)
 
 When `await-event` outputs `EFFORT: reduced`, run an ABBREVIATED patrol.
-This happens when idle_cycles >= {{idle_effort_threshold}} (no events on channel).
+This happens on every channel timeout; idle_cycles controls only the next wait duration.
 
 Abbreviated patrol rules:
 - **inbox-check**: Run `gt mail drain` and quick inbox check. Skip individual message processing unless new MERGE_READY found.
@@ -108,7 +108,7 @@ When `await-event` outputs `EFFORT: full`, run all steps thoroughly (normal mode
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-refinery-patrol"
-version = 17
+version = 18
 
 [vars]
 [vars.wisp_type]
@@ -116,7 +116,7 @@ description = "Type of wisp created for this molecule"
 default = "patrol"
 
 [vars.idle_effort_threshold]
-description = "Idle cycles before switching to abbreviated patrol (0 = always full)"
+description = "Deprecated compatibility setting; every channel timeout is abbreviated"
 default = "1"
 
 [vars.integration_branch_refinery_enabled]

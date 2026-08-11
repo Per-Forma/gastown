@@ -658,23 +658,21 @@ func updateLines(log string) []string {
 	return updates
 }
 
-func TestEffortLevelContextYield(t *testing.T) {
-	// context-yield must produce EffortLevel "full" so context-check is
-	// not abbreviated.
-	result := &AwaitEventResult{
-		Reason:     "context-yield",
-		IdleCycles: 5, // high idle count that would normally produce "abbreviated"
-	}
-
-	// Replicate the effort-level logic from runMoleculeAwaitEvent.
-	if result.Reason == "event" || result.Reason == "context-yield" || result.IdleCycles == 0 {
-		result.EffortLevel = "full"
-	} else {
-		result.EffortLevel = "abbreviated"
-	}
-
-	if result.EffortLevel != "full" {
-		t.Errorf("context-yield should produce EffortLevel 'full', got %q", result.EffortLevel)
+func TestAwaitEventEffortLevel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		want   string
+	}{
+		{name: "event", reason: "event", want: "full"},
+		{name: "context yield", reason: "context-yield", want: "full"},
+		{name: "untracked idle timeout", reason: "timeout", want: "abbreviated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := awaitEventEffortLevel(tc.reason); got != tc.want {
+				t.Fatalf("awaitEventEffortLevel(%q) = %q, want %q", tc.reason, got, tc.want)
+			}
+		})
 	}
 }
 
