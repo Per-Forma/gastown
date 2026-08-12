@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/dog"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -52,6 +53,7 @@ func (d *Daemon) handleDogs() {
 	t := tmux.NewTmux()
 	sm := dog.NewSessionManager(t, d.config.TownRoot, mgr)
 
+	d.finalizeCompletedDogWork(mgr, sm)
 	d.cleanupStuckDogs(mgr, sm)
 	d.detectStaleWorkingDogs(mgr, sm, opCfg)
 	d.reapIdleDogs(mgr, sm, opCfg)
@@ -73,10 +75,103 @@ func (d *Daemon) handleDogsCleanupOnly() {
 	t := tmux.NewTmux()
 	sm := dog.NewSessionManager(t, d.config.TownRoot, mgr)
 
+	d.finalizeCompletedDogWork(mgr, sm)
 	d.cleanupStuckDogs(mgr, sm)
 	d.detectStaleWorkingDogs(mgr, sm, opCfg)
 	d.reapIdleDogs(mgr, sm, opCfg)
 	// Skip dispatchPlugins — under pressure
+}
+
+var listClosedDogFormulaAssignments = func(townRoot, assignee string) ([]*beads.Issue, error) {
+	b := beads.New(townRoot)
+	return b.List(beads.ListOptions{
+		Status:    string(beads.StatusClosed),
+		Assignee:  assignee,
+		Priority:  -1,
+		Ephemeral: true,
+		Limit:     0,
+	})
+}
+
+// finalizeCompletedDogWork is a model-independent backstop for formula dogs.
+// If the assigned formula root is already closed, the work is terminal even if
+// the dog failed to execute `gt dog done`. Completion is compare-and-clear and
+// therefore safe to retry on every daemon heartbeat.
+func (d *Daemon) finalizeCompletedDogWork(mgr *dog.Manager, sm *dog.SessionManager) {
+	dogs, err := mgr.List()
+	if err != nil {
+		d.logger.Printf("Handler: failed to list dogs for completion finalization: %v", err)
+		return
+	}
+
+	for _, dg := range dogs {
+		if dg.State != dog.StateWorking || dg.Work == "" || dg.WorkStartedAt.IsZero() {
+			continue
+		}
+
+		closedAssignments, err := listClosedDogFormulaAssignments(
+			d.config.TownRoot,
+			fmt.Sprintf("deacon/dogs/%s", dg.Name),
+		)
+		if err != nil {
+			d.logger.Printf("Handler: failed to check completed formula for dog %s: %v", dg.Name, err)
+			continue
+		}
+		if !dogFormulaAssignmentComplete(dg, closedAssignments) {
+			continue
+		}
+
+		running, err := sm.IsRunning(dg.Name)
+		if err != nil {
+			d.logger.Printf("Handler: failed to check completed dog session %s: %v", dg.Name, err)
+			continue
+		}
+		if running {
+			if err := sm.Stop(dg.Name, true); err != nil {
+				d.logger.Printf("Handler: failed to stop completed dog session %s: %v", dg.Name, err)
+				continue
+			}
+		}
+
+		cleared, err := mgr.ClearWorkIfMatches(dg.Name, dg.Work, dg.WorkStartedAt)
+		if err != nil {
+			d.logger.Printf("Handler: failed to finalize completed dog %s: %v", dg.Name, err)
+			continue
+		}
+		if !cleared {
+			d.logger.Printf("Handler: skipped finalizing dog %s: work assignment changed", dg.Name)
+			continue
+		}
+
+		if closed, err := dog.ArchivePluginDispatchMail(d.config.TownRoot, dg.Name); err != nil {
+			d.logger.Printf("Handler: completed dog %s returned idle; plugin mail cleanup failed: %v", dg.Name, err)
+		} else if closed > 0 {
+			d.logger.Printf("Handler: archived %d plugin dispatch mail(s) for completed dog %s", closed, dg.Name)
+		}
+		d.logger.Printf("Handler: finalized completed formula %s for dog %s", dg.Work, dg.Name)
+	}
+}
+
+func dogFormulaAssignmentComplete(dg *dog.Dog, closedAssignments []*beads.Issue) bool {
+	if dg == nil || dg.State != dog.StateWorking || dg.Work == "" || dg.WorkStartedAt.IsZero() {
+		return false
+	}
+
+	for _, issue := range closedAssignments {
+		if issue == nil || issue.Status != string(beads.StatusClosed) {
+			continue
+		}
+		fields := beads.ParseAttachmentFields(issue)
+		if fields == nil || fields.AttachedFormula != dg.Work || fields.AttachedAt == "" {
+			continue
+		}
+		attachedAt, err := time.Parse(time.RFC3339Nano, fields.AttachedAt)
+		if err != nil || attachedAt.Before(dg.WorkStartedAt.UTC()) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // cleanupStuckDogs finds dogs in state=working whose tmux session or agent

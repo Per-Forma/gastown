@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/dog"
@@ -76,13 +77,14 @@ func testSetupWorkingDogState(t *testing.T, townRoot, name, work string, lastAct
 	}
 
 	ds := &dog.DogState{
-		Name:       name,
-		State:      dog.StateWorking,
-		Work:       work,
-		LastActive: lastActive,
-		Worktrees:  map[string]string{},
-		CreatedAt:  lastActive,
-		UpdatedAt:  lastActive,
+		Name:          name,
+		State:         dog.StateWorking,
+		Work:          work,
+		WorkStartedAt: lastActive,
+		LastActive:    lastActive,
+		Worktrees:     map[string]string{},
+		CreatedAt:     lastActive,
+		UpdatedAt:     lastActive,
 	}
 
 	data, err := json.MarshalIndent(ds, "", "  ")
@@ -91,6 +93,87 @@ func testSetupWorkingDogState(t *testing.T, townRoot, name, work string, lastAct
 	}
 	if err := os.WriteFile(filepath.Join(kennelDir, ".dog.json"), data, 0644); err != nil {
 		t.Fatalf("Failed to write dog state: %v", err)
+	}
+}
+
+func TestDogFormulaAssignmentComplete(t *testing.T) {
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	dg := &dog.Dog{
+		Name:          "alpha",
+		State:         dog.StateWorking,
+		Work:          constants.MolDogReaper,
+		WorkStartedAt: startedAt,
+	}
+	issue := func(status, formula string, attachedAt time.Time) *beads.Issue {
+		return &beads.Issue{
+			ID:     "hq-wisp-reaper",
+			Status: status,
+			Description: fmt.Sprintf(
+				"attached_formula: %s\nattached_at: %s\n",
+				formula,
+				attachedAt.Format(time.RFC3339Nano),
+			),
+		}
+	}
+
+	if !dogFormulaAssignmentComplete(dg, []*beads.Issue{
+		issue(string(beads.StatusClosed), constants.MolDogReaper, startedAt.Add(time.Second)),
+	}) {
+		t.Fatal("matching closed formula assignment should be terminal")
+	}
+	for name, issues := range map[string][]*beads.Issue{
+		"still hooked":   {issue(beads.StatusHooked, constants.MolDogReaper, startedAt.Add(time.Second))},
+		"wrong formula":  {issue(string(beads.StatusClosed), constants.MolDogDoctor, startedAt.Add(time.Second))},
+		"old assignment": {issue(string(beads.StatusClosed), constants.MolDogReaper, startedAt.Add(-time.Second))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if dogFormulaAssignmentComplete(dg, issues) {
+				t.Fatal("unrelated formula state should not finalize current dog work")
+			}
+		})
+	}
+}
+
+func TestFinalizeCompletedDogWorkClearsExactlyOnce(t *testing.T) {
+	townRoot := t.TempDir()
+	d := testHandlerDaemon(t, townRoot)
+	rigsConfig := &config.RigsConfig{Version: 1, Rigs: map[string]config.RigEntry{}}
+	mgr := dog.NewManager(townRoot, rigsConfig)
+	sm := dog.NewSessionManager(tmux.NewTmux(), townRoot, mgr)
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	testSetupWorkingDogState(t, townRoot, "alpha", constants.MolDogReaper, startedAt)
+
+	originalList := listClosedDogFormulaAssignments
+	listCalls := 0
+	listClosedDogFormulaAssignments = func(_, assignee string) ([]*beads.Issue, error) {
+		listCalls++
+		if assignee != "deacon/dogs/alpha" {
+			t.Fatalf("assignee = %q, want deacon/dogs/alpha", assignee)
+		}
+		return []*beads.Issue{{
+			ID:     "hq-wisp-reaper",
+			Status: string(beads.StatusClosed),
+			Description: fmt.Sprintf(
+				"attached_formula: %s\nattached_at: %s\n",
+				constants.MolDogReaper,
+				startedAt.Add(time.Second).Format(time.RFC3339Nano),
+			),
+		}}, nil
+	}
+	t.Cleanup(func() { listClosedDogFormulaAssignments = originalList })
+
+	d.finalizeCompletedDogWork(mgr, sm)
+	d.finalizeCompletedDogWork(mgr, sm)
+
+	got, err := mgr.Get("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != dog.StateIdle || got.Work != "" || !got.WorkStartedAt.IsZero() {
+		t.Fatalf("finalized dog = %+v, want idle with cleared work", got)
+	}
+	if listCalls != 1 {
+		t.Fatalf("closed assignment queries = %d, want 1 (second finalization must be a no-op)", listCalls)
 	}
 }
 

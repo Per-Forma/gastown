@@ -26,8 +26,8 @@ func TestDefaultLifecycleConfig(t *testing.T) {
 	if p.WispReaper == nil || !p.WispReaper.Enabled {
 		t.Error("expected wisp_reaper to be enabled")
 	}
-	if p.WispReaper.IntervalStr != "30m" {
-		t.Errorf("expected wisp_reaper interval 30m, got %s", p.WispReaper.IntervalStr)
+	if p.WispReaper.IntervalStr != "1h" {
+		t.Errorf("expected wisp_reaper interval 1h, got %s", p.WispReaper.IntervalStr)
 	}
 	if p.WispReaper.DeleteAgeStr != "168h" {
 		t.Errorf("expected wisp_reaper delete_age 168h, got %s", p.WispReaper.DeleteAgeStr)

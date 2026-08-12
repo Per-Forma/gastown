@@ -24,6 +24,65 @@ func TestEnsureRoleWorktreeIntegrity_CloneFreeWitnessSkipsGitRequirement(t *test
 	}
 }
 
+func TestEnsureRoleWorktreeIntegrity_CloneFreeDogAndBootRootsSkipGitRequirement(t *testing.T) {
+	townRoot := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		role Role
+		path string
+	}{
+		{name: "dog", role: RoleDog, path: filepath.Join(townRoot, "deacon", "dogs", "alpha")},
+		{name: "boot", role: RoleBoot, path: filepath.Join(townRoot, "deacon", "dogs", "boot")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := ensureRoleWorktreeIntegrity(tc.path, townRoot, tc.role); err != nil {
+				t.Fatalf("canonical clone-free %s prime should not require .git: %v", tc.role, err)
+			}
+		})
+	}
+}
+
+func TestEnsureRoleWorktreeIntegrity_DogNestedRigWorktreeRemainsStrict(t *testing.T) {
+	townRoot := t.TempDir()
+	workDir := filepath.Join(townRoot, "deacon", "dogs", "alpha", "gastown")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureRoleWorktreeIntegrity(workDir, townRoot, RoleDog); err == nil {
+		t.Fatal("nested dog rig worktree accepted a missing .git marker")
+	}
+}
+
+func TestEnsureRoleWorktreeIntegrity_CloneFreeDogAndBootRejectMisplacedGit(t *testing.T) {
+	townRoot := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		role Role
+		path string
+	}{
+		{name: "dog", role: RoleDog, path: filepath.Join(townRoot, "deacon", "dogs", "alpha")},
+		{name: "boot", role: RoleBoot, path: filepath.Join(townRoot, "deacon", "dogs", "boot")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(tc.path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(tc.path, ".git"), []byte("gitdir: /wrong/place\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := ensureRoleWorktreeIntegrity(tc.path, townRoot, tc.role)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "clone-free") {
+				t.Fatalf("misplaced %s root .git error = %v, want clone-free guidance", tc.role, err)
+			}
+		})
+	}
+}
+
 func TestEnsureRoleWorktreeIntegrity_WorktreeRolesRemainStrict(t *testing.T) {
 	townRoot := t.TempDir()
 	for _, role := range []Role{RolePolecat, RoleCrew} {

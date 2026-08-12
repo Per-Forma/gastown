@@ -742,38 +742,7 @@ func closePluginMails(dogName string) {
 		return // not in a Gas Town workspace, skip cleanup
 	}
 
-	dogAddress := fmt.Sprintf("deacon/dogs/%s", dogName)
-	router := mail.NewRouterWithTownRoot(townRoot, townRoot)
-	mailbox, err := router.GetMailbox(dogAddress)
-	if err != nil {
-		return
-	}
-
-	messages, err := mailbox.List()
-	if err != nil {
-		return
-	}
-
-	closed := 0
-	for _, msg := range messages {
-		// Archive read AND unread direct plugin dispatch mail. The dog must read
-		// the dispatch mail to execute the plugin, so skipping read mail left
-		// every executed dispatch bead open forever. Keep this scoped to Deacon
-		// dispatches so CC or human messages with a similar subject are preserved.
-		if !strings.HasPrefix(msg.Subject, "Plugin: ") {
-			continue
-		}
-		if mail.AddressToIdentity(msg.To) != mail.AddressToIdentity(dogAddress) {
-			continue
-		}
-		sender := mail.AddressToIdentity(msg.From)
-		if sender != "deacon/" && sender != "daemon" {
-			continue
-		}
-		if archErr := mailbox.Archive(msg.ID); archErr == nil {
-			closed++
-		}
-	}
+	closed, _ := dog.ArchivePluginDispatchMail(townRoot, dogName)
 
 	if closed > 0 {
 		fmt.Printf("  Closed %d stale plugin mail(s) from inbox\n", closed)

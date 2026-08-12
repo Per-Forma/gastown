@@ -191,12 +191,10 @@ func isRoleCommand(cmd *cobra.Command) bool {
 }
 
 func isDoneCommand(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "done" {
-			return true
-		}
-	}
-	return false
+	// Only the top-level `gt done` command is polecat-only. Several unrelated
+	// command trees also have a `done` leaf (`gt dog done`, `gt wl done`, and
+	// `gt mol step done`) and must reach their own role-specific handlers.
+	return cmd == doneCmd
 }
 
 // initCLITheme initializes the CLI color theme based on settings and environment.

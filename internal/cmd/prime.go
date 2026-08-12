@@ -246,21 +246,20 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 }
 
 func ensureRoleWorktreeIntegrity(cwd, townRoot string, role Role) error {
-	// The canonical Witness home is intentionally clone-free. Do not search
-	// upward and accidentally validate a customer/town repository ancestor.
-	// Legacy witness/rig workdirs still flow through strict validation below.
 	cleanCWD := filepath.Clean(cwd)
-	if role == RoleWitness &&
-		filepath.Base(cleanCWD) == "witness" &&
-		filepath.Dir(filepath.Dir(cleanCWD)) == filepath.Clean(townRoot) {
+	if isCanonicalCloneFreeRoleRoot(cleanCWD, townRoot, role) {
+		// Canonical Witness, Dog, and Boot homes are aggregate/control
+		// directories, not product clones. Do not search upward and validate an
+		// unrelated town repository ancestor. Actual nested worktrees (for
+		// example deacon/dogs/<name>/<rig>) still flow through strict validation.
 		rootGit := filepath.Join(cleanCWD, ".git")
 		if _, err := os.Lstat(rootGit); err == nil {
 			return fmt.Errorf(
-				"invalid Witness layout: %s is a misplaced product worktree; canonical witness/ must be clone-free (legacy Git belongs at witness/rig/.git)\nRemediation: preserve any product changes, remove the misplaced root worktree, then run `gt doctor`",
-				rootGit,
+				"invalid %s layout: %s is a misplaced product worktree; canonical %s must be clone-free\nRemediation: preserve any product changes, remove the misplaced root worktree, then run `gt doctor`",
+				role, rootGit, cloneFreeRoleRootLabel(role),
 			)
 		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect canonical Witness Git marker %s: %w", rootGit, err)
+			return fmt.Errorf("inspect canonical %s Git marker %s: %w", role, rootGit, err)
 		}
 		return nil
 	}
@@ -271,6 +270,36 @@ func ensureRoleWorktreeIntegrity(cwd, townRoot string, role Role) error {
 		return fmt.Errorf("%w\nRemediation: stop using this worktree and run `gt doctor --fix`", err)
 	}
 	return nil
+}
+
+func isCanonicalCloneFreeRoleRoot(cwd, townRoot string, role Role) bool {
+	cleanCWD := filepath.Clean(cwd)
+	cleanTownRoot := filepath.Clean(townRoot)
+
+	switch role {
+	case RoleWitness:
+		return filepath.Base(cleanCWD) == "witness" &&
+			filepath.Dir(filepath.Dir(cleanCWD)) == cleanTownRoot
+	case RoleDog:
+		return filepath.Dir(cleanCWD) == filepath.Join(cleanTownRoot, "deacon", "dogs")
+	case RoleBoot:
+		return cleanCWD == filepath.Join(cleanTownRoot, "deacon", "dogs", "boot")
+	default:
+		return false
+	}
+}
+
+func cloneFreeRoleRootLabel(role Role) string {
+	switch role {
+	case RoleWitness:
+		return "witness/"
+	case RoleDog:
+		return "deacon/dogs/<name>/"
+	case RoleBoot:
+		return "deacon/dogs/boot/"
+	default:
+		return "role root"
+	}
 }
 
 func roleRequiresWorktreeIntegrity(role Role) bool {

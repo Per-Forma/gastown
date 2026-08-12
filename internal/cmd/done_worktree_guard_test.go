@@ -287,14 +287,17 @@ func TestRunDoneRejectsMayorRigBeforeAutosave(t *testing.T) {
 }
 
 func TestIsDoneCommand(t *testing.T) {
-	done := &cobra.Command{Use: "done"}
-	root := &cobra.Command{Use: "gt"}
-	root.AddCommand(done)
-	if !isDoneCommand(done) {
-		t.Fatal("done command should be detected")
+	if !isDoneCommand(doneCmd) {
+		t.Fatal("top-level gt done command should be detected")
 	}
-	if isDoneCommand(root) {
+	if isDoneCommand(rootCmd) {
 		t.Fatal("root command should not be detected as done")
+	}
+
+	for _, cmd := range []*cobra.Command{dogDoneCmd, wlDoneCmd, moleculeStepDoneCmd} {
+		if isDoneCommand(cmd) {
+			t.Errorf("nested command %q should not be detected as top-level gt done", cmd.CommandPath())
+		}
 	}
 }
 
@@ -315,8 +318,7 @@ func TestPersistentPreRunDoneRejectsBeforeRegistryFallback(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	done := &cobra.Command{Use: "done"}
-	err = persistentPreRun(done, nil)
+	err = persistentPreRun(doneCmd, nil)
 	if err == nil || !strings.Contains(err.Error(), "assigned polecat worktree") {
 		t.Fatalf("persistentPreRun error = %v, want assigned worktree rejection", err)
 	}
