@@ -73,7 +73,7 @@ When `await-signal` outputs `EFFORT: full`, run all steps thoroughly (normal mod
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-deacon-patrol"
-version = 15
+version = 16
 
 [vars]
 [vars.wisp_type]
@@ -287,7 +287,7 @@ name contains a PID and that PID is dead, clean up.
 
 ```bash
 TMPDIR="${TMPDIR:-/tmp}"
-for dir in "$TMPDIR"/beads-test-dolt-* "$TMPDIR"/beads-bd-tests-*; do
+while IFS= read -r -d '' dir; do
   [ -d "$dir" ] || continue
   # Extract PID from dir name if present, or check if any process has it open
   # Use lsof to check if any process is using files in this dir
@@ -295,7 +295,8 @@ for dir in "$TMPDIR"/beads-test-dolt-* "$TMPDIR"/beads-bd-tests-*; do
     chmod -R u+w "$dir" 2>/dev/null
     rm -rf "$dir" && echo "Cleaned stale test dir: $(basename "$dir")"
   fi
-done
+done < <(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d \
+  \\( -name 'beads-test-dolt-*' -o -name 'beads-bd-tests-*' \\) -print0)
 ```
 
 **3. Stale PID/lock files**
@@ -303,13 +304,14 @@ done
 Scan for dead PID files in /tmp:
 
 ```bash
-for pidfile in /tmp/dolt-test-server-*.pid /tmp/beads-test-dolt-*.pid; do
+while IFS= read -r -d '' pidfile; do
   [ -f "$pidfile" ] || continue
   PID=$(cat "$pidfile" 2>/dev/null)
   if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
     rm -f "$pidfile" && echo "Removed stale PID file: $(basename "$pidfile") (PID=$PID dead)"
   fi
-done
+done < <(find /tmp -mindepth 1 -maxdepth 1 -type f \
+  \\( -name 'dolt-test-server-*.pid' -o -name 'beads-test-dolt-*.pid' \\) -print0)
 ```
 
 **4. Dead dog worktrees**
@@ -318,12 +320,12 @@ If a dog's tmux session is dead but worktree dirs remain, prune them.
 
 ```bash
 # For each dog directory
-for dogdir in ~/gt/deacon/dogs/*/; do
+while IFS= read -r -d '' dogdir; do
   DOG=$(basename "$dogdir")
   # Check if dog has a live tmux session
   if ! tmux has-session -t "dog-$DOG" 2>/dev/null; then
     # Dog session is dead - check for leftover worktree dirs
-    for rigrepo in "$dogdir"*/; do
+    while IFS= read -r -d '' rigrepo; do
       [ -d "$rigrepo/.git" ] || continue
       # Worktree exists but session is dead - prune it
       git -C "$rigrepo" worktree list 2>/dev/null
@@ -334,9 +336,9 @@ for dogdir in ~/gt/deacon/dogs/*/; do
         git worktree remove --force "$rigrepo" 2>/dev/null && \
           echo "Pruned worktree: $rigrepo"
       fi
-    done
+    done < <(find "$dogdir" -mindepth 1 -maxdepth 1 -type d -print0)
   fi
-done
+done < <(find "$HOME/gt/deacon/dogs" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 ```
 
 **5. Report**

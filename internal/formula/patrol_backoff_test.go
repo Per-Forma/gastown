@@ -270,6 +270,56 @@ func TestDeaconPatrolDoesNotRunAgeBasedWispGC(t *testing.T) {
 	}
 }
 
+// TestDeaconPatrolCleanupAvoidsBareGlobs verifies that cleanup remains safe in
+// shells such as zsh, where an unmatched glob aborts the command before a loop
+// body can apply its file-existence guard.
+func TestDeaconPatrolCleanupAvoidsBareGlobs(t *testing.T) {
+	content, err := formulasFS.ReadFile("formulas/mol-deacon-patrol.formula.toml")
+	if err != nil {
+		t.Fatalf("reading deacon patrol formula: %v", err)
+	}
+
+	f, err := Parse(content)
+	if err != nil {
+		t.Fatalf("parsing deacon patrol formula: %v", err)
+	}
+
+	var cleanupDesc string
+	for _, step := range f.Steps {
+		if step.ID == "test-pollution-cleanup" {
+			cleanupDesc = step.Description
+			break
+		}
+	}
+	if cleanupDesc == "" {
+		t.Fatal("deacon patrol formula: test-pollution-cleanup step not found or has empty description")
+	}
+
+	bareGlobLoops := []string{
+		`for dir in "$TMPDIR"/beads-test-dolt-*`,
+		`for pidfile in /tmp/dolt-test-server-*.pid`,
+		`for dogdir in ~/gt/deacon/dogs/*/`,
+		`for rigrepo in "$dogdir"*/`,
+	}
+	for _, pattern := range bareGlobLoops {
+		if strings.Contains(cleanupDesc, pattern) {
+			t.Errorf("deacon test-pollution-cleanup uses shell-sensitive glob loop %q", pattern)
+		}
+	}
+
+	quotedFindPatterns := []string{
+		`-name 'beads-test-dolt-*'`,
+		`-name 'beads-bd-tests-*'`,
+		`-name 'dolt-test-server-*.pid'`,
+		`-name 'beads-test-dolt-*.pid'`,
+	}
+	for _, pattern := range quotedFindPatterns {
+		if !strings.Contains(cleanupDesc, pattern) {
+			t.Errorf("deacon test-pollution-cleanup missing quoted find pattern %q", pattern)
+		}
+	}
+}
+
 // TestPatrolFormulasUseDynamicBeadResolution verifies that patrol formulas
 // resolve their agent bead ID dynamically at runtime via `gt agents resolve`,
 // rather than hardcoding a prefix like `gt-<rig>-refinery`.
