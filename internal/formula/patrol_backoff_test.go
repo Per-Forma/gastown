@@ -294,6 +294,9 @@ func TestDeaconPatrolCleanupAvoidsBareGlobs(t *testing.T) {
 	if cleanupDesc == "" {
 		t.Fatal("deacon patrol formula: test-pollution-cleanup step not found or has empty description")
 	}
+	if !strings.Contains(cleanupDesc, "unmatched") || !strings.Contains(cleanupDesc, "zsh") {
+		t.Error("deacon test-pollution-cleanup must explain why bare shell globs are unsafe")
+	}
 
 	bareGlobLoops := []string{
 		`for dir in "$TMPDIR"/beads-test-dolt-*`,

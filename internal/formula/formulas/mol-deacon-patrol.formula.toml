@@ -282,8 +282,10 @@ gt dolt kill-imposters 2>/dev/null || true
 
 **2. Stale test temp dirs**
 
-Glob `beads-test-dolt-*` and `beads-bd-tests-*` in TMPDIR. If the directory
-name contains a PID and that PID is dead, clean up.
+Enumerate `beads-test-dolt-*` and `beads-bd-tests-*` in TMPDIR with `find`. Do
+not use bare shell globs: patrol commands may run in zsh, where an unmatched
+glob aborts before the loop's existence guard can run. If the directory name
+contains a PID and that PID is dead, clean up.
 
 ```bash
 TMPDIR="${TMPDIR:-/tmp}"
@@ -301,7 +303,7 @@ done < <(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d \
 
 **3. Stale PID/lock files**
 
-Scan for dead PID files in /tmp:
+Scan for dead PID files in /tmp with quoted `find` name patterns:
 
 ```bash
 while IFS= read -r -d '' pidfile; do
@@ -316,7 +318,8 @@ done < <(find /tmp -mindepth 1 -maxdepth 1 -type f \
 
 **4. Dead dog worktrees**
 
-If a dog's tmux session is dead but worktree dirs remain, prune them.
+If a dog's tmux session is dead but worktree dirs remain, prune them. Use
+`find` so an empty dog pool is a successful no-op in both bash and zsh.
 
 ```bash
 # For each dog directory
